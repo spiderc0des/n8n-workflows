@@ -1,0 +1,994 @@
+{
+  "name": "Abdulrahman - Invoice Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 1 · Watch and pre-filter\nGmail Trigger runs only while the workflow is **Active**, and never backfills — it sees mail that arrives *after* activation.\n\nThe keyword/attachment filter is deliberately loose. It only exists to avoid spending an API call on every newsletter. Whether something really is an invoice is decided by Claude further down.",
+        "height": 200,
+        "width": 460,
+        "color": 4
+      },
+      "id": "9510a236-4ba9-40f9-8f7d-b4cd484a9288",
+      "name": "Note s1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1392,
+        976
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 2 · Get the invoice text\nPDF path: Extract From File (pdfjs) → quality gate.\nNo PDF: use the email body.\n\n**The gate matters.** A corrupt file throws; a scanned page opens but yields no text. Either way Claude is never called, because handing a model an empty string invites a confident invented answer. OCR is out of scope, and that is recorded honestly.",
+        "height": 230,
+        "width": 640,
+        "color": 5
+      },
+      "id": "ede3cabd-488e-45c7-af9f-bd1ba039bbe4",
+      "name": "Note s2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2240,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 3 · Extract with Claude\n`tool_choice` pins the model to one tool, so the reply is always structured — no prose to parse.\n\nThe prompt forbids guessing: absent fields come back `null`. That is the point of the whole exercise — a blank cell is honest, an invented invoice number is not.\n\nThe HTTP node replaces `json`, so the email context is recovered by index from *Prepare For Claude*.",
+        "height": 230,
+        "width": 620,
+        "color": 3
+      },
+      "id": "6acd1071-cba2-4264-8418-3db566e2f3af",
+      "name": "Note s3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3072,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Gate · invoice or not\nOnly records Claude confirms are invoices go on to be validated and logged - the sheet is a log of **invoices**, not of email traffic.\n\nRejected mail stops at *Not An Invoice - Skipped*, so it stays visible in the execution list without cluttering the sheet.\n\nCorrupt files and API errors pass **through** this gate: those are failures to process, and the brief asks for them to be logged.",
+        "height": 190,
+        "width": 460
+      },
+      "id": "02384e16-2888-4e84-9bc7-b267a9e44b36",
+      "name": "Note s7",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3664,
+        1600
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 4 · Validate, then de-duplicate\nValidation **flags**, it never repairs or blocks: anything missing or malformed is named in `error_note` and the row is still logged.\n\nA Sheets read *replaces* the incoming items, so *Check Duplicate* takes the invoice from **Finalize Row** by name and the existing rows from its own input. Real rows carry `row_number`; the empty-sheet placeholder does not.",
+        "height": 230,
+        "width": 620,
+        "color": 6
+      },
+      "id": "fd5723aa-7c19-4a2b-af4b-1eb8a71cc38e",
+      "name": "Note s4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3888,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 5 · Log the invoices\nThe sheet holds invoice records: `valid`, `valid_missing_fields`, plus the failures the brief asks to be recorded — `unsupported_attachment` and `extraction_failed` — each with an `error_note`.\n\nThree things never produce a row: an email that was never a candidate, one Claude rules is not an invoice, and a duplicate. All three are visible in the execution list.",
+        "height": 230,
+        "width": 480,
+        "color": 2
+      },
+      "id": "fd484cb6-61d2-47ca-9068-26a81460d9c4",
+      "name": "Note s5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        4912,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {},
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "id": "8c2f98f3-8dac-48c2-865e-f24d5d0b6544",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        1424,
+        1232
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "18QCpo76cyozeCK8",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Prepare Candidate\"  (Code, Run Once for All Items)\n// Normalises the Gmail Trigger output into a stable shape and decides whether\n// the email is worth treating as an invoice candidate at all.\n//\n// Gmail Trigger with Simplify=OFF parses mail with mailparser, so `from` is an\n// object ({ value: [{ address, name }], text, html }), NOT a string, and the\n// body lives under text / html / textAsHtml. Both shapes are handled defensively.\n\nconst KEYWORDS =\n  /\\b(invoice|invoices|invoicing|billing|bill|payment|receipt|statement|fee note|charges|factuur)\\b/i;\n\nfunction extractEmail(raw) {\n  if (!raw) return '';\n  if (typeof raw === 'string') {\n    const m = raw.match(/<([^>]+)>/);\n    return (m ? m[1] : raw).trim().toLowerCase();\n  }\n  if (Array.isArray(raw.value) && raw.value[0] && raw.value[0].address) {\n    return String(raw.value[0].address).trim().toLowerCase();\n  }\n  if (raw.address) return String(raw.address).trim().toLowerCase();\n  if (raw.text) {\n    const m = String(raw.text).match(/<([^>]+)>/);\n    return (m ? m[1] : raw.text).trim().toLowerCase();\n  }\n  return '';\n}\n\nfunction htmlToText(html) {\n  return String(html || '')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/p>/gi, '\\n')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&amp;/g, '&')\n    .replace(/&lt;/g, '<')\n    .replace(/&gt;/g, '>')\n    .replace(/&#39;|&apos;/g, \"'\")\n    .replace(/&quot;/g, '\"')\n    .replace(/[ \\t]+/g, ' ')\n    .replace(/\\n\\s*\\n\\s*\\n+/g, '\\n\\n')\n    .trim();\n}\n\nfunction toIso(value) {\n  if (!value) return new Date().toISOString();\n  const d = new Date(value);\n  return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();\n}\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const binary = item.binary || {};\n\n  const subject = String(j.subject || '').trim();\n  const senderEmail = extractEmail(j.from);\n\n  const plain = String(j.text || '').trim();\n  const emailBody = plain || htmlToText(j.html || j.textAsHtml || '');\n\n  // j.id is the Gmail API message id; j.messageId is the RFC-822 header. Prefer the API id.\n  const gmailMessageId = String(j.id || j.messageId || '').trim();\n\n  // Collect EVERY PDF, not just the first. One email can carry several invoices,\n  // and each one deserves its own row - so Select PDF Binary fans this list out\n  // into one item per PDF.\n  const pdfAttachments = [];\n  const attachmentNames = [];\n\n  for (const key of Object.keys(binary)) {\n    const b = binary[key] || {};\n    const name = String(b.fileName || '');\n    if (name) attachmentNames.push(name);\n    const isPdf =\n      b.mimeType === 'application/pdf' || name.toLowerCase().endsWith('.pdf');\n    if (isPdf) pdfAttachments.push({ key, name });\n  }\n\n  const hasPdfAttachment = pdfAttachments.length > 0;\n  const hasAttachment = attachmentNames.length > 0;\n\n  // Deliberately loose: anything with an attachment or an invoice-ish keyword is a\n  // candidate. Telling a real invoice from a look-alike is Claude's job downstream,\n  // because keywords alone cannot separate \"your invoice\" from \"invoicing moves to\n  // the new portal\". This only exists to avoid spending an API call on every email.\n  const isCandidate =\n    hasAttachment || KEYWORDS.test(subject) || KEYWORDS.test(emailBody);\n\n  out.push({\n    json: {\n      gmail_message_id: gmailMessageId,\n      received_date: toIso(j.date),\n      subject,\n      sender_email: senderEmail,\n      email_body: emailBody,\n      has_pdf_attachment: hasPdfAttachment,\n      has_attachment: hasAttachment,\n      pdf_attachments: pdfAttachments,\n      pdf_count: pdfAttachments.length,\n      attachment_names: attachmentNames.join(', '),\n      is_candidate: isCandidate,\n    },\n    binary,\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "3b4d5235-6d37-4d92-abce-0c4d9b293adf",
+      "name": "Prepare Candidate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1632,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-candidate-c",
+              "leftValue": "={{ $json.is_candidate }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "06040b3d-3eec-4283-a5ce-e98b3a28537a",
+      "name": "Is Candidate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1824,
+        1232
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "9551a24d-3b0e-414b-9f3e-2e711d361df4",
+      "name": "Ignored - Not Candidate",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2048,
+        1392
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-pdf-c",
+              "leftValue": "={{ $json.has_pdf_attachment }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "19f2a7e6-6b11-46a1-8eb0-425a7163b54b",
+      "name": "Has PDF Attachment?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2048,
+        1136
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Select PDF Binary\"  (Code, Run Once for All Items)\n//\n// Fans one email out into one item per PDF attachment, because a single email can\n// carry several invoices and each one needs its own row.\n//\n// It also renames the chosen attachment to a fixed binary key. Gmail names\n// attachments attachment_0, attachment_1, ... but Extract From File reads one\n// fixed property, so the PDF being processed is always copied to \"data\".\n//\n// Emitting N items here is what makes the rest of the PDF path work unchanged:\n// Extract From File runs once per item, and Check PDF Text realigns the email\n// context by index against this node's output.\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const list = Array.isArray(item.json.pdf_attachments) ? item.json.pdf_attachments : [];\n\n  for (let i = 0; i < list.length; i++) {\n    const att = list[i] || {};\n    const binary = {};\n    if (att.key && item.binary && item.binary[att.key]) {\n      binary.data = item.binary[att.key];\n    }\n\n    out.push({\n      json: {\n        ...item.json,\n        pdf_binary_key: att.key,\n        pdf_file_name: att.name || '',\n        pdf_index: i + 1,\n        pdf_count: list.length,\n      },\n      binary,\n    });\n  }\n}\n\nreturn out;\n"
+      },
+      "id": "c5a16c4e-a1aa-4558-8837-6dd8d9d7257c",
+      "name": "Select PDF Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2272,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {
+          "keepSource": "json"
+        }
+      },
+      "id": "97ed3d0e-d302-4e04-8dbc-a2a2218b9284",
+      "name": "Extract PDF Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        2464,
+        1040
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Check PDF Text\"  (Code, Run Once for All Items)\n//\n// Decides whether the PDF gave us text worth sending to Claude, and re-attaches\n// the email context.\n//\n// The context has to be recovered rather than read off the incoming item, because\n// Extract From File does not carry it through reliably:\n//   - on success it merges item.json ONLY when keepSource is set; the guard is a\n//     truthiness test (`options.keepSource && ... !== 'binary'`), so an unset\n//     option silently discards everything upstream;\n//   - on failure its catch block emits `{ error }` on its own, discarding json\n//     outright no matter what keepSource says.\n// Recovering by index from \"Select PDF Binary\" covers both, since Extract From\n// File pushes exactly one item per input item, in order, from both its try and\n// its catch branch.\n//\n// Two failure modes are caught here and neither is sent to Claude:\n//   - the node threw            -> a corrupt or unopenable file\n//   - it opened but has no text -> a flat scan with no text layer\n// Handing a model an empty or near-empty string invites a confident invented\n// answer, which is worse than an honest failure. OCR is out of scope, and the\n// note says so.\n\nconst sources = $('Select PDF Binary').all();\nconst results = $input.all();\n\n// A genuine invoice page carries hundreds of alphanumeric characters. A scan\n// with no text layer carries none, or a few stray artefacts. Both thresholds\n// have to fail for the text to be rejected on density grounds.\nconst MIN_USABLE_CHARS = 40;\nconst MIN_ALNUM_PER_PAGE = 60;\n\n// \"Print to PDF\" from a browser stamps a header and footer onto the page: a\n// timestamp, the document title, the source URL and a page marker. When someone\n// prints a screenshot of an invoice, THAT CHROME IS THE ONLY REAL TEXT IN THE\n// FILE - the invoice itself is a flat image. It is enough to clear a naive\n// character count, which is how such a file reaches the model and comes back\n// classified on the strength of a URL. Strip the chrome first, then measure what\n// is genuinely left. Removing a stray URL from a real invoice costs nothing,\n// because a real invoice has hundreds of characters besides.\nfunction stripPrintChrome(input) {\n  return String(input || '')\n    // print timestamp: \"7/28/25, 4:53 PM\" or \"28/07/2025, 16:53\"\n    .replace(/\\b\\d{1,2}\\/\\d{1,2}\\/\\d{2,4},?\\s*\\d{1,2}:\\d{2}(?::\\d{2})?\\s*(?:AM|PM)?/gi, ' ')\n    // source URL in the footer\n    .replace(/https?:\\/\\/\\S+/gi, ' ')\n    // image dimension annotation: \"(620×877)\"\n    .replace(/\\(\\s*\\d{2,5}\\s*[×x]\\s*\\d{2,5}\\s*\\)/gi, ' ')\n    // bare asset filename used as the print title\n    .replace(/\\b[\\w.-]+\\.(?:webp|png|jpe?g|gif|bmp|tiff?|svg|pdf|html?)\\b/gi, ' ')\n    // page marker \"1/1\" - the lookarounds keep it from eating a date like 08/12/2026\n    .replace(/(?<![\\d/])\\d{1,3}\\s*\\/\\s*\\d{1,3}(?![\\d/])/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\n// Belt and braces: take each context field from the merged json when keepSource\n// did its job, and fall back to the indexed source item otherwise. Either\n// mechanism alone is sufficient, so a regression in one does not blank the row.\nconst pick = (a, b, key) => (a[key] !== undefined && a[key] !== '' ? a[key] : b[key]) || '';\n\nconst out = [];\n\nfor (let i = 0; i < results.length; i++) {\n  const src = (sources[i] && sources[i].json) || {};\n  const j = (results[i] && results[i].json) || {};\n\n  const rawError = j.error;\n  const errorMessage = rawError\n    ? typeof rawError === 'string'\n      ? rawError\n      : rawError.message || 'PDF extraction failed'\n    : null;\n\n  const text = String(j.text || '').trim();\n  const pages = Math.max(1, Number(j.numpages) || 1);\n\n  // Measure the content, not the browser's print header and footer.\n  const content = stripPrintChrome(text);\n  const alnum = (content.match(/[A-Za-z0-9]/g) || []).length;\n  const alnumPerPage = alnum / pages;\n  const chromeOnly = text.length > 0 && alnum < MIN_USABLE_CHARS;\n\n  let textUsable = true;\n  let unreadableReason = '';\n\n  if (errorMessage) {\n    textUsable = false;\n    unreadableReason =\n      'PDF could not be opened (file is corrupt or not a readable PDF): ' + errorMessage;\n  } else if (content.length < MIN_USABLE_CHARS || alnum < MIN_USABLE_CHARS) {\n    textUsable = false;\n    unreadableReason =\n      'PDF opened (' + pages + ' page(s)) but carries no readable invoice text' +\n      (chromeOnly\n        ? ' - the only text in the file is the browser print header/footer (timestamp, title, source URL), so the invoice itself is a flat image'\n        : '') +\n      ' (' + text.length + ' characters extracted, ' + alnum +\n      ' alphanumeric once print chrome is removed). OCR is not supported by this workflow, ' +\n      'so nothing was guessed.';\n  } else if (alnumPerPage < MIN_ALNUM_PER_PAGE) {\n    textUsable = false;\n    unreadableReason =\n      'PDF opened (' + pages + ' page(s)) but the extracted text is too sparse to be a real ' +\n      'invoice (' + alnum + ' alphanumeric characters, ' + Math.round(alnumPerPage) +\n      ' per page) - most likely scanner artefacts over a flat image. OCR is not supported by ' +\n      'this workflow, so nothing was guessed.';\n  }\n\n  out.push({\n    json: {\n      gmail_message_id: pick(j, src, 'gmail_message_id'),\n      received_date: pick(j, src, 'received_date'),\n      subject: pick(j, src, 'subject'),\n      sender_email: pick(j, src, 'sender_email'),\n      source_type: 'pdf_attachment',\n      file_reference: pick(j, src, 'pdf_file_name'),\n      pdf_index: src.pdf_index || 1,\n      pdf_count: src.pdf_count || 1,\n      // Claude still receives the original text; the chrome is harmless noise to\n      // a model and could occasionally carry a real clue. Only the GATE runs on\n      // the stripped version.\n      invoice_text: text,\n      text_chars: text.length,\n      text_alnum: alnum,\n      text_content_chars: content.length,\n      pdf_pages: pages,\n      text_usable: textUsable,\n      unreadable_reason: unreadableReason,\n    },\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "96b8044c-0938-4adb-a697-2932ab7875d0",
+      "name": "Check PDF Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2672,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Use Email Body\"  (Code, Run Once for All Items)\n// No PDF attachment: the email body itself is the invoice source.\n\nconst MIN_USABLE_CHARS = 20;\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const text = String(j.email_body || '').trim();\n  const usable = text.length >= MIN_USABLE_CHARS;\n\n  out.push({\n    json: {\n      gmail_message_id: j.gmail_message_id,\n      received_date: j.received_date,\n      subject: j.subject,\n      sender_email: j.sender_email,\n      source_type: 'email_body',\n      // If there were attachments but none were PDFs, name them so the log shows\n      // why the body was used instead.\n      file_reference: j.has_attachment && !j.has_pdf_attachment ? j.attachment_names : '',\n      invoice_text: text,\n      text_usable: usable,\n      unreadable_reason: usable\n        ? ''\n        : 'Email body was empty or too short to contain invoice details, and no readable PDF was attached.',\n    },\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "6630c7f0-7826-4902-870c-5e9875d9270b",
+      "name": "Use Email Body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2272,
+        1248
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "text-usable-c",
+              "leftValue": "={{ $json.text_usable }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ea4c5dd9-7409-4901-b6cf-29c77ea609f2",
+      "name": "Text Usable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2880,
+        1136
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Prepare For Claude\"  (Code, Run Once for All Items)\n// Builds the full Anthropic request body here rather than inside the HTTP node,\n// so the prompt is version-controlled, testable, and the HTTP node stays trivial\n// (its JSON body is just  {{ JSON.stringify($json.claude_request) }} ).\n//\n// tool_choice pins the model to a single tool, so the reply is always a\n// structured object - there is no prose to regex out and nothing to \"parse\n// loosely\". The schema marks every field required, so the model must decide\n// explicitly, and null is the only way to say \"not present\".\n\nconst SYSTEM_PROMPT = [\n  'You extract invoice data for Novus Realty, a property management company.',\n  'You are given the raw text of one email - either the email body, or text extracted from a PDF attachment.',\n  '',\n  'First decide whether the text is genuinely an invoice, bill, or fee note requesting payment for goods or services already identified.',\n  'Then call the record_invoice tool.',\n  '',\n  'Rules, in order of importance:',\n  '1. Never invent, guess, infer, or estimate a value that is not explicitly present in the text. If a field is absent or ambiguous, return null for it. A blank field is correct and useful; a plausible-looking invented one is a serious error, because nothing downstream can tell it apart from a real value.',\n  '2. Set is_invoice to false, and every other field to null, when the text is not an actual invoice. Examples that are NOT invoices: a reminder to update a saved payment method, a newsletter or internal update that merely mentions invoicing or billing, a receipt confirming a payment already made, a quote or estimate, a delivery note.',\n  '3. total_amount must be the final total payable, as a plain number: no currency symbol, no thousands separators, no text. If several totals appear (subtotal, tax, total), return the final gross total.',\n  '4. currency must be a three-letter ISO 4217 code (USD, EUR, GBP, ...). Derive it only from an explicit symbol, code, or word in the text. If the text shows an ambiguous symbol with no other clue, return null rather than assuming.',\n  '5. Dates must be YYYY-MM-DD. Interpret them using the invoice\\'s own conventions and language - note that in European layouts DD/MM/YYYY is normal, so 08/12/2026 is 8 December 2026, not 12 August. If you cannot determine a date with confidence, return null.',\n  '6. invoice_number is the vendor\\'s own reference for the invoice. Do not substitute an account number, a customer number, a VAT/tax number, an order number, or a payment reference. If the document carries no invoice number of its own, return null.',\n  '7. vendor_name is the party issuing the invoice and being paid, not Novus Realty (the recipient).',\n  '8. description is a short summary of what is being billed, in English, at most about 200 characters.',\n  '9. The text may be in a language other than English, or bilingual. Extract the values regardless of language.',\n].join('\\n');\n\nconst TOOL = {\n  name: 'record_invoice',\n  description:\n    'Record the invoice fields extracted from the text, or report that the text is not an invoice.',\n  input_schema: {\n    type: 'object',\n    properties: {\n      is_invoice: {\n        type: 'boolean',\n        description: 'True only if this text is an actual invoice, bill, or fee note requesting payment.',\n      },\n      vendor_name: { type: ['string', 'null'], description: 'The party issuing the invoice.' },\n      invoice_number: { type: ['string', 'null'], description: \"The vendor's own invoice reference, or null.\" },\n      invoice_date: { type: ['string', 'null'], description: 'Issue date as YYYY-MM-DD, or null.' },\n      due_date: { type: ['string', 'null'], description: 'Payment due date as YYYY-MM-DD, or null.' },\n      total_amount: { type: ['number', 'null'], description: 'Final total payable as a plain number, or null.' },\n      currency: { type: ['string', 'null'], description: 'ISO 4217 three-letter code, or null.' },\n      description: { type: ['string', 'null'], description: 'Short summary of what is billed, or null.' },\n    },\n    required: [\n      'is_invoice',\n      'vendor_name',\n      'invoice_number',\n      'invoice_date',\n      'due_date',\n      'total_amount',\n      'currency',\n      'description',\n    ],\n  },\n};\n\n// Guard against a pathological attachment blowing up the request.\nconst MAX_TEXT_CHARS = 24000;\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  let text = String(j.invoice_text || '');\n  let truncated = false;\n\n  if (text.length > MAX_TEXT_CHARS) {\n    text = text.slice(0, MAX_TEXT_CHARS);\n    truncated = true;\n  }\n\n  const userContent = [\n    'Source: ' + (j.source_type === 'pdf_attachment' ? 'text extracted from a PDF attachment' : 'the email body'),\n    'Email subject: ' + (j.subject || '(none)'),\n    'Sender: ' + (j.sender_email || '(unknown)'),\n    '',\n    '--- BEGIN TEXT ---',\n    text,\n    '--- END TEXT ---',\n  ].join('\\n');\n\n  out.push({\n    json: {\n      ...j,\n      text_truncated: truncated,\n      claude_request: {\n        // NOTE: do not add temperature / top_p / top_k here. Sampling parameters\n        // are removed on Claude Sonnet 5 and the API rejects them with a 400\n        // (\"`temperature` is deprecated for this model\").\n        model: 'claude-sonnet-5',\n        max_tokens: 1024,\n        system: SYSTEM_PROMPT,\n        tools: [TOOL],\n        tool_choice: { type: 'tool', name: 'record_invoice' },\n        messages: [{ role: 'user', content: userContent }],\n      },\n    },\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "ad313fdd-4ff0-40ab-aa1a-23c26b6795d5",
+      "name": "Prepare For Claude",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3104,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.claude_request) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "c0383cb7-dc13-4b79-9199-af64e57e819b",
+      "name": "Claude Extract Invoice Fields",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        3312,
+        1040
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PxnGayxlp3sn6vEo",
+          "name": "Fake key"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Parse Claude Response\"  (Code, Run Once for All Items)\n//\n// IMPORTANT: the HTTP Request node REPLACES item.json with the API response, so\n// gmail_message_id / sender_email / source_type / file_reference are gone by the\n// time we get here. They are recovered by index from \"Prepare For Claude\", which\n// is safe because HTTP Request emits exactly one output item per input item, in\n// order - including when a call fails and onError=continueRegularOutput turns it\n// into an error item. (Deliberately not using itemMatching(), whose paired-item\n// resolution is fragile across an HTTP node.)\n\nconst contextItems = $('Prepare For Claude').all();\nconst responses = $input.all();\n\nconst out = [];\n\nfor (let i = 0; i < responses.length; i++) {\n  const ctx = (contextItems[i] && contextItems[i].json) || {};\n  const res = (responses[i] && responses[i].json) || {};\n\n  const base = {\n    gmail_message_id: ctx.gmail_message_id,\n    received_date: ctx.received_date,\n    subject: ctx.subject,\n    sender_email: ctx.sender_email,\n    source_type: ctx.source_type,\n    file_reference: ctx.file_reference,\n  };\n\n  // 1. Did the HTTP call itself fail?\n  if (res.error) {\n    const msg =\n      typeof res.error === 'string'\n        ? res.error\n        : res.error.message || JSON.stringify(res.error).slice(0, 300);\n    out.push({ json: { ...base, _outcome: 'api_error', _error: 'Claude API call failed: ' + msg, keep_processing: true } });\n    continue;\n  }\n\n  // 2. Did the API return an error payload with a 200-shaped body?\n  if (res.type === 'error') {\n    const msg = (res.error && res.error.message) || 'unknown API error';\n    out.push({ json: { ...base, _outcome: 'api_error', _error: 'Claude API returned an error: ' + msg, keep_processing: true } });\n    continue;\n  }\n\n  // 3. Find the forced tool call.\n  const content = Array.isArray(res.content) ? res.content : [];\n  const toolBlock = content.find(\n    (b) => b && b.type === 'tool_use' && b.name === 'record_invoice',\n  );\n\n  if (!toolBlock || !toolBlock.input) {\n    out.push({\n      json: {\n        ...base,\n        _outcome: 'api_error',\n        keep_processing: true,\n        _error:\n          'Claude did not return a record_invoice tool call (stop_reason: ' +\n          (res.stop_reason || 'unknown') +\n          ').',\n      },\n    });\n    continue;\n  }\n\n  const f = toolBlock.input;\n\n  out.push({\n    json: {\n      ...base,\n      _outcome: 'extracted',\n      _error: '',\n      is_invoice: f.is_invoice === true,\n      // Only an actual invoice goes on to be validated and logged. A failure to\n      // process still continues, because the brief asks for those to be recorded\n      // with enough detail to debug later.\n      keep_processing: f.is_invoice === true,\n      vendor_name: f.vendor_name,\n      invoice_number: f.invoice_number,\n      invoice_date: f.invoice_date,\n      due_date: f.due_date,\n      total_amount: f.total_amount,\n      currency: f.currency,\n      description: f.description,\n      text_truncated: ctx.text_truncated === true,\n    },\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "c618ab02-aef6-418c-bf86-88280438d389",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3504,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Build Unreadable Row\"  (Code, Run Once for All Items)\n// The false branch of \"Text Usable?\": a corrupt PDF, a scan with no text layer,\n// or an empty body. Claude is never called. The row records why, so the failure\n// is visible in the sheet instead of only in an n8n execution log.\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  out.push({\n    json: {\n      gmail_message_id: j.gmail_message_id,\n      received_date: j.received_date,\n      subject: j.subject,\n      sender_email: j.sender_email,\n      source_type: j.source_type,\n      file_reference: j.file_reference,\n      _outcome: 'unreadable',\n      keep_processing: true,\n      _error: j.unreadable_reason || 'Invoice text could not be read.',\n    },\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "1315cee8-7e11-417c-bf23-7d7d836d4c02",
+      "name": "Build Unreadable Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3104,
+        1280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-invoice-c",
+              "leftValue": "={{ $json.keep_processing }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f59a6184-15a5-46a5-b827-04edbee0967a",
+      "name": "Is An Invoice?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3728,
+        1232
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "e442cadf-a9f2-4f34-9cdd-36039295f12e",
+      "name": "Not An Invoice - Skipped",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3728,
+        1440
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Finalize Row\"  (Code, Run Once for All Items)\n//\n// Single convergence point. Both the Claude path and the unreadable path arrive\n// here, and exactly one row shape leaves - the 15 columns of the sheet, in order.\n// Validation happens here too: it FLAGS problems, it never blocks or backfills.\n// A missing field stays blank and is named in error_note, because a blank cell is\n// honest and an invented value is not.\n\nconst ISO_DATE = /^\\d{4}-\\d{2}-\\d{2}$/;\nconst ISO_CURRENCY = /^[A-Z]{3}$/;\n\nfunction cleanText(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v).trim();\n  // Guard against a model that answers with a literal placeholder instead of null.\n  if (/^(null|n\\/a|na|none|unknown|not specified|not provided|-)$/i.test(s)) return '';\n  return s;\n}\n\nfunction isRealDate(s) {\n  if (!ISO_DATE.test(s)) return false;\n  const [y, m, d] = s.split('-').map(Number);\n  const dt = new Date(Date.UTC(y, m - 1, d));\n  return (\n    dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d\n  );\n}\n\nconst EMPTY_ROW = {\n  vendor_name: '',\n  invoice_number: '',\n  invoice_date: '',\n  due_date: '',\n  total_amount: '',\n  currency: '',\n  description: '',\n};\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n\n  const base = {\n    received_date: j.received_date || '',\n    sender_email: j.sender_email || '',\n    subject: j.subject || '',\n    source_type: j.source_type || '',\n    file_reference: j.file_reference || '',\n    processed_at: new Date().toISOString(),\n  };\n\n  // --- Paths that never produced invoice fields -----------------------------\n  if (j._outcome === 'unreadable') {\n    out.push({\n      json: { ...base, ...EMPTY_ROW, processing_status: 'unsupported_attachment', error_note: j._error },\n    });\n    continue;\n  }\n\n  if (j._outcome === 'api_error') {\n    out.push({\n      json: { ...base, ...EMPTY_ROW, processing_status: 'extraction_failed', error_note: j._error },\n    });\n    continue;\n  }\n\n  // --- Claude classified it as not an invoice -------------------------------\n  if (j.is_invoice !== true) {\n    out.push({\n      json: {\n        ...base,\n        ...EMPTY_ROW,\n        processing_status: 'not_invoice',\n        error_note:\n          'Matched an invoice keyword or carried an attachment, but Claude classified the content as not an invoice. No fields were extracted.',\n      },\n    });\n    continue;\n  }\n\n  // --- Normalise the extracted fields ---------------------------------------\n  const vendorName = cleanText(j.vendor_name);\n  const invoiceNumber = cleanText(j.invoice_number);\n  const description = cleanText(j.description);\n\n  const rawCurrency = cleanText(j.currency).toUpperCase();\n  const currency = ISO_CURRENCY.test(rawCurrency) ? rawCurrency : '';\n\n  const rawInvoiceDate = cleanText(j.invoice_date);\n  const invoiceDate = isRealDate(rawInvoiceDate) ? rawInvoiceDate : '';\n\n  const rawDueDate = cleanText(j.due_date);\n  const dueDate = isRealDate(rawDueDate) ? rawDueDate : '';\n\n  let totalAmount = '';\n  if (typeof j.total_amount === 'number' && isFinite(j.total_amount)) {\n    totalAmount = j.total_amount;\n  } else if (j.total_amount !== null && j.total_amount !== undefined) {\n    // Defensive: accept a numeric string, reject anything else.\n    const n = Number(String(j.total_amount).replace(/[^0-9.\\-]/g, ''));\n    if (String(j.total_amount).trim() !== '' && isFinite(n)) totalAmount = n;\n  }\n\n  // --- Validate: report, do not repair --------------------------------------\n  const missing = [];\n  const invalid = [];\n\n  if (!vendorName) missing.push('vendor_name');\n  if (!invoiceNumber) missing.push('invoice_number');\n  if (totalAmount === '') missing.push('total_amount');\n  else if (typeof totalAmount === 'number' && totalAmount <= 0) invalid.push('total_amount is not positive');\n  if (!currency) {\n    if (rawCurrency) invalid.push('currency \"' + rawCurrency + '\" is not a valid ISO 4217 code');\n    else missing.push('currency');\n  }\n  if (!invoiceDate && !dueDate) missing.push('invoice_date or due_date');\n  if (rawInvoiceDate && !invoiceDate) invalid.push('invoice_date \"' + rawInvoiceDate + '\" is not a valid YYYY-MM-DD date');\n  if (rawDueDate && !dueDate) invalid.push('due_date \"' + rawDueDate + '\" is not a valid YYYY-MM-DD date');\n\n  const notes = [];\n  if (missing.length) notes.push('Missing: ' + missing.join(', ') + '.');\n  if (invalid.length) notes.push('Invalid: ' + invalid.join('; ') + '.');\n  if (j.text_truncated) notes.push('Source text was truncated before extraction.');\n\n  out.push({\n    json: {\n      ...base,\n      vendor_name: vendorName,\n      invoice_number: invoiceNumber,\n      invoice_date: invoiceDate,\n      due_date: dueDate,\n      total_amount: totalAmount,\n      currency,\n      description,\n      processing_status: missing.length || invalid.length ? 'valid_missing_fields' : 'valid',\n      error_note: notes.join(' '),\n    },\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "67097d42-1e3d-4d8a-ae87-8bb6fb2d75b2",
+      "name": "Finalize Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3920,
+        1136
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1BfQYb9nNRQceinPpVMbKFUbIOALDd1yLCd9NARvoSLY",
+          "mode": "list",
+          "cachedResultName": "Invoice Log",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1BfQYb9nNRQceinPpVMbKFUbIOALDd1yLCd9NARvoSLY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Invoices",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1BfQYb9nNRQceinPpVMbKFUbIOALDd1yLCd9NARvoSLY/edit#gid=0"
+        },
+        "options": {}
+      },
+      "id": "e42e3bf0-57f7-449d-be3e-4abe117e304f",
+      "name": "Get All Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        4320,
+        1136
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "LX1rDAGeQ2Ui9XJy",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Check Duplicate\"  (Code, Run Once for All Items)\n//\n// IMPORTANT: a Google Sheets read REPLACES the incoming items with sheet rows, so\n// $input.all() here is the SHEET, not the invoice. The invoice rows are taken\n// from \"Finalize Row\" by node reference. (Getting this wrong silently compares\n// the sheet against itself and lets every duplicate through.)\n//\n// \"Get All Rows\" has Always Output Data on, so an empty sheet still emits one\n// bare item rather than halting the workflow. Genuine sheet rows always carry\n// row_number, which is how that placeholder is told apart from real data.\n//\n// IDENTITY\n// --------\n// A row is identified by four fields together:\n//\n//     total_amount | invoice_number | sender_email | file_reference\n//\n// That combination is what makes a document unique in practice. It deliberately\n// does NOT use the Gmail message id: a resent invoice arrives as a brand-new\n// message, so keying on the message would treat every resend as new. Keying on\n// the document instead means a resend is recognised however it arrives, while a\n// re-processed execution still resolves to the same key.\n//\n// Where one email carries several PDFs, each becomes its own row, and the file\n// name is what keeps them apart.\n\nconst sheetRows = $input\n  .all()\n  .map((r) => r.json || {})\n  .filter((r) => r.row_number !== undefined && r.row_number !== null);\n\nconst invoices = $('Finalize Row').all();\n\nconst norm = (v) => String(v === null || v === undefined ? '' : v).trim().toLowerCase();\n\n// Amounts must compare by value, not by how they were written: the sheet can hand\n// back \"1200\" where the workflow produced 1200.0, or \"1,200.50\" if a human edited\n// the cell. Anything that is not a number falls back to plain text comparison.\nfunction normAmount(v) {\n  const raw = norm(v);\n  if (raw === '') return '';\n  if (!/\\d/.test(raw)) return raw;\n  const n = Number(raw.replace(/[^0-9.\\-]/g, ''));\n  return isFinite(n) ? String(n) : raw;\n}\n\nconst identity = (r) =>\n  [normAmount(r.total_amount), norm(r.invoice_number), norm(r.sender_email), norm(r.file_reference)].join('|');\n\nconst out = [];\n\nfor (const item of invoices) {\n  const j = item.json || {};\n  const key = identity(j);\n\n  // A failure logged from an email body has no number, no total and no file, so\n  // the composite key collapses to the sender alone - which would make two\n  // unrelated failures from one vendor look identical. Those rows, and only\n  // those, fall back to matching on the subject.\n  const keyIsThin =\n    !norm(j.invoice_number) && normAmount(j.total_amount) === '' && !norm(j.file_reference);\n\n  let isDuplicate = false;\n  let duplicateReason = '';\n\n  for (const row of sheetRows) {\n    if (!keyIsThin) {\n      if (identity(row) === key) {\n        isDuplicate = true;\n        duplicateReason = 'same total, invoice number, sender and file as row ' + row.row_number;\n        break;\n      }\n    } else if (\n      j.subject &&\n      norm(row.subject) === norm(j.subject) &&\n      norm(row.sender_email) === norm(j.sender_email) &&\n      !norm(row.invoice_number) &&\n      !norm(row.file_reference)\n    ) {\n      isDuplicate = true;\n      duplicateReason =\n        'same subject and sender as row ' + row.row_number +\n        ', with no invoice number, total or attachment to tell them apart';\n      break;\n    }\n  }\n\n  out.push({\n    json: {\n      ...j,\n      is_duplicate: isDuplicate,\n      duplicate_reason: duplicateReason,\n      duplicate_key: key,\n      sheet_rows_checked: sheetRows.length,\n    },\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "c4608630-63be-4e13-a050-864c0a5fc8be",
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4528,
+        1136
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-duplicate-c",
+              "leftValue": "={{ $json.is_duplicate }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "efa9dee6-28a8-4cfc-9488-b8bddf680a36",
+      "name": "Is Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        4720,
+        1136
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b4602c22-988a-4703-9328-c6697587dbd3",
+      "name": "Duplicate - Skipped",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        4944,
+        1296
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Build Sheet Row\"  (Code, Run Once for All Items)\n// Emits exactly the sheet's columns, in order, and nothing else. The duplicate\n// check adds bookkeeping fields (is_duplicate, duplicate_reason, ...) that must\n// not reach the Append node, because \"Map Automatically\" maps whatever it is\n// given by name. This node is the contract with the spreadsheet.\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  out.push({\n    json: {\n      received_date: j.received_date || '',\n      // subject identifies a row whose invoice fields are all blank, and is what\n      // the last-resort duplicate rule matches on.\n      subject: j.subject || '',\n      vendor_name: j.vendor_name || '',\n      sender_email: j.sender_email || '',\n      invoice_number: j.invoice_number || '',\n      invoice_date: j.invoice_date || '',\n      due_date: j.due_date || '',\n      total_amount: j.total_amount === '' || j.total_amount === null || j.total_amount === undefined ? '' : j.total_amount,\n      currency: j.currency || '',\n      description: j.description || '',\n      source_type: j.source_type || '',\n      file_reference: j.file_reference || '',\n      processing_status: j.processing_status || '',\n      error_note: j.error_note || '',\n      processed_at: j.processed_at || new Date().toISOString(),\n    },\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "e52267ab-3c42-4544-a705-c63d2be96712",
+      "name": "Build Sheet Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4944,
+        1072
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1BfQYb9nNRQceinPpVMbKFUbIOALDd1yLCd9NARvoSLY",
+          "mode": "list",
+          "cachedResultName": "Invoice Log",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1BfQYb9nNRQceinPpVMbKFUbIOALDd1yLCd9NARvoSLY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Invoices",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1BfQYb9nNRQceinPpVMbKFUbIOALDd1yLCd9NARvoSLY/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "received_date",
+              "displayName": "received_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "vendor_name",
+              "displayName": "vendor_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sender_email",
+              "displayName": "sender_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "due_date",
+              "displayName": "due_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "total_amount",
+              "displayName": "total_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "currency",
+              "displayName": "currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_type",
+              "displayName": "source_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "file_reference",
+              "displayName": "file_reference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_note",
+              "displayName": "error_note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "processed_at",
+              "displayName": "processed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "invoice_date",
+              "displayName": "invoice_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "04eeb142-55e0-4a4a-a6f0-285b1504439d",
+      "name": "Append Invoice Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        5152,
+        1072
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "LX1rDAGeQ2Ui9XJy",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Prepare Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Candidate": {
+      "main": [
+        [
+          {
+            "node": "Is Candidate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Candidate?": {
+      "main": [
+        [
+          {
+            "node": "Has PDF Attachment?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ignored - Not Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has PDF Attachment?": {
+      "main": [
+        [
+          {
+            "node": "Select PDF Binary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Use Email Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select PDF Binary": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF Text": {
+      "main": [
+        [
+          {
+            "node": "Check PDF Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check PDF Text": {
+      "main": [
+        [
+          {
+            "node": "Text Usable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use Email Body": {
+      "main": [
+        [
+          {
+            "node": "Text Usable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text Usable?": {
+      "main": [
+        [
+          {
+            "node": "Prepare For Claude",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Unreadable Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare For Claude": {
+      "main": [
+        [
+          {
+            "node": "Claude Extract Invoice Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Extract Invoice Fields": {
+      "main": [
+        [
+          {
+            "node": "Parse Claude Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Claude Response": {
+      "main": [
+        [
+          {
+            "node": "Is An Invoice?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is An Invoice?": {
+      "main": [
+        [
+          {
+            "node": "Finalize Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Not An Invoice - Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Unreadable Row": {
+      "main": [
+        [
+          {
+            "node": "Finalize Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Row": {
+      "main": [
+        [
+          {
+            "node": "Get All Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Rows": {
+      "main": [
+        [
+          {
+            "node": "Check Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Is Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Duplicate - Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Sheet Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Sheet Row": {
+      "main": [
+        [
+          {
+            "node": "Append Invoice Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "39cf4d96-922a-4df3-90c6-45ce9c930a57",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "4c7399d63283ab23b038107b3d9551ef4ce9469e21819dd4d80f7395ea107ece"
+  },
+  "nodeGroups": [],
+  "id": "xI9syzVmbOgbRaxg",
+  "tags": []
+}

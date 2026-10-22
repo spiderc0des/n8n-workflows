@@ -1,0 +1,1321 @@
+{
+  "name": "Abdulrahman - AI Operations Reporting",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 1 · Trigger, then fan out\nThree triggers, one entry point. **Run Config** freezes `as_of` once and derives the three reporting periods from it.\n\nNothing downstream is allowed to call `new Date()` — a run that takes two minutes must not compute \"last 30 days\" against two different todays, and a pinned `as_of` is what makes a test run reproducible.\n\n**The reference date is fixed at 2026-06-30**, not taken from the clock. The sources cover Jan 2025 to Jun 2026, so a run anchored to the real today returns nothing and the dashboard looks broken while the workflow is fine.\n\nPeriods: last 30 days, last 90 days, year to date — plus a **custom range** when the webhook body carries `custom_start` and `custom_end`.",
+        "height": 220,
+        "width": 700,
+        "color": 4
+      },
+      "id": "91b1e206-4ca1-419a-b08c-4e7836134a4e",
+      "name": "Note s1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        4656,
+        1440
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 2 · Collect and normalise\nEach source node is **On Error → Continue**: a dead source degrades the run, it does not kill it.\n\nEach normaliser has a `FIELD_MAP` at the top — the only place the source's column names appear. When the sheet turns out to say \"Value (GBP)\", that is the one line that changes.\n\nRecords are never dropped. A broken date is stored with `is_countable = false` and named in the issues list.",
+        "height": 220,
+        "width": 520,
+        "color": 5
+      },
+      "id": "4d936883-321e-430c-b56f-b7edf3f31564",
+      "name": "Note s2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        5408,
+        1440
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 3 · Skip when nothing changed\n**Source Fingerprint** hashes the reference date, the period windows and every normalised record. If a completed run already carries that hash, recomputing could only produce the same numbers.\n\nRefresh and the custom-range button then return instantly instead of spending a model call restating what is already on screen. The skip branch stamps `last_checked_at` on the run it matched, so the dashboard can tell \"checked, nothing had changed\" from \"the webhook never fired\".\n\n**Scheduled runs never skip.** The daily history point is the whole purpose of them, and a history with holes on the quiet days is worse than no history.",
+        "height": 266,
+        "width": 900,
+        "color": 7
+      },
+      "id": "b97a71d9-b598-40be-95e2-ca8c8ad30030",
+      "name": "Note s7",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        6032,
+        1504
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 4 · Write the facts once\nOne POST per table with an **array** body. The Supabase node inserts one row per item\n\nThe `runs` row is written first with `status = 'running'`, and only flipped to `complete` at the very end. The dashboard reads the `latest_run` view, which filters on complete — so a half-written run is invisible rather than misleading.",
+        "height": 220,
+        "width": 1340,
+        "color": 6
+      },
+      "id": "69affc84-856e-4b09-87b9-b672d72e8971",
+      "name": "Note s3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        7200,
+        1744
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 4 · Every period, one call\nThis is the decision the whole build rests on: **a reporting period is data, not a dashboard filter.**\n\n**There is no loop.** The metric engine computes every window in one pass — it is arithmetic over arrays already in memory — and Claude receives all of them in one call, returning one object per period.\n\n\nSource records are filtered to each window **before** any metric is calculated, so no metric can quietly use a different period.",
+        "height": 292,
+        "width": 900,
+        "color": 3
+      },
+      "id": "eae6332d-bf1c-4872-89ba-0b4255279c05",
+      "name": "Note s4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        8784,
+        1712
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 5 · Only aggregates cross this line\n**Prepare Claude Input** sends computed metrics and a data-quality block. Not one source record crosses.\n\nEvery item Claude returns must cite `metric_keys` drawn from a supplied list. **Grounding Check** holds it to that: anything citing a key that was never sent is moved to `ungrounded_claims` and kept out of the report.\n\nThat turns \"the insights are grounded\" from a claim into a number: **0 ungrounded claims**.",
+        "height": 240,
+        "width": 900
+      },
+      "id": "df11216c-0d48-42f2-9e20-78925f5ac5bf",
+      "name": "Note s5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        9440,
+        2400
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 6 · Commit\nMetrics and insights are written per period.\n\n**Complete Run** fires output and PATCHes `runs.status` to `complete`. That single write is the commit point the dashboard keys off — everything before it is invisible to readers.",
+        "height": 220,
+        "width": 460,
+        "color": 2
+      },
+      "id": "717a1625-0c69-467c-90a0-0f9acfa661b5",
+      "name": "Note s6",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        9984,
+        1760
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {}
+          ]
+        }
+      },
+      "id": "dd0a6c8b-5c01-44c9-9e13-ab2424e872e8",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        4704,
+        1760
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-ops-report",
+        "options": {}
+      },
+      "id": "d46663ed-646b-4271-a77c-077df3919f93",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        4704,
+        1952
+      ],
+      "webhookId": "koya-ops-report"
+    },
+    {
+      "parameters": {},
+      "id": "437d64e9-3ebc-4c6a-a316-aeebe37cd92d",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        4704,
+        2128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Run Config\"  (Code, Run Once for All Items)\n// The single item every other node takes its bearings from.\n//\n// Emits: { run_id, triggered_by, as_of, supabase_url, periods: [...] }\n//\n// as_of is frozen HERE and used everywhere downstream. Nothing further down the\n// graph calls new Date(): a run that takes two minutes must not compute\n// \"last 30 days\" against two different todays, and a fixed as_of is also what\n// makes a test run reproducible.\n\n// ---- tunables -------------------------------------------------------------\n\n// THE REPORTING REFERENCE DATE. Fixed by the KPI guide, not taken from the clock.\n// All three sources cover January 2025 to June 2026, so a run anchored to the\n// real today returns nothing at all and the dashboard looks broken while the\n// workflow is working correctly. Change this only when the data does.\nconst REFERENCE_DATE = '2026-06-30';\n\nconst FISCAL_YEAR_START_MONTH = 1;   // 1 = January. YTD is wrong if this is wrong.\n\n// start = end - N days, which is how the KPI guide defines them:\n// \"last 30 days\" is 31 May - 30 June 2026, \"last 90 days\" is 1 April - 30 June.\n// Both windows are therefore N+1 days inclusive. Matching the guide's stated\n// dates matters more than any argument about off-by-one.\nconst ROLLING_WINDOWS = [\n  { key: 'last_30_days', label: 'Last 30 days', days: 30 },\n  { key: 'last_90_days', label: 'Last 90 days', days: 90 },\n];\n\n// The one value that cannot be known ahead of time. Every HTTP node reads it\n// from here rather than carrying its own copy, so pointing the workflow at a\n// different Supabase project is a one-line change. Not a secret -- the project\n// URL is public; the key lives in the n8n credential.\nconst SUPABASE_URL = 'https://<enter your project id>.supabase.co';\n\n// ---------------------------------------------------------------------------\n\nconst input = $input.first()?.json ?? {};\nconst body = input.body ?? {};\n\n// Which trigger fired. The three emit recognisably different payloads: the\n// Webhook wraps everything in body/headers/query, the Schedule Trigger emits a\n// timestamp, and the Manual Trigger emits an empty object. A caller can also\n// state it outright, which is what the test harness does.\nfunction detectTrigger() {\n  if (body.triggered_by) return String(body.triggered_by);\n  if (input.headers || input.body || input.query) return 'webhook';\n  if (input.timestamp || input['Readable date']) return 'schedule';\n  return 'manual';\n}\n\n// A v4 UUID without reaching for a module. n8n's Code sandbox does not reliably\n// expose node:crypto, so this falls back rather than throwing on some hosts.\nfunction uuid() {\n  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {\n    return crypto.randomUUID();\n  }\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {\n    const r = (Math.random() * 16) | 0;\n    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);\n  });\n}\n\nconst isIsoDate = (v) => /^\\d{4}-\\d{2}-\\d{2}$/.test(String(v ?? ''));\nconst iso = (d) => d.toISOString().slice(0, 10);\nconst shift = (d, days) => {\n  const out = new Date(d);\n  out.setUTCDate(out.getUTCDate() + days);\n  return out;\n};\n\n// as_of may be pinned by the caller. The harness and the messy-data tests rely\n// on this: \"last 30 days\" against a moving today is not a fixture.\nconst asOfIso = isIsoDate(body.as_of) ? body.as_of : REFERENCE_DATE;\nconst asOf = new Date(asOfIso + 'T00:00:00Z');\n\nconst y = asOf.getUTCFullYear();\n\n// Fiscal year start: this calendar year's, unless that is still ahead of us.\nlet fyStart = new Date(Date.UTC(y, FISCAL_YEAR_START_MONTH - 1, 1));\nif (fyStart > asOf) fyStart = new Date(Date.UTC(y - 1, FISCAL_YEAR_START_MONTH - 1, 1));\n\nconst periods = ROLLING_WINDOWS.map((w) => ({\n  key: w.key,\n  label: w.label,\n  start: iso(shift(asOf, -w.days)),\n  end: asOfIso,\n}));\n\nperiods.push({ key: 'ytd', label: 'Year to date', start: iso(fyStart), end: asOfIso });\n\n// The fourth period the KPI guide requires. Only present when the caller asked\n// for one -- the dashboard's custom range picker POSTs custom_start/custom_end\n// to the webhook, and the run comes back with a `custom` period alongside the\n// three standing ones. Reversed dates are corrected rather than rejected, since\n// a swapped pair is a slip, not an instruction.\nif (isIsoDate(body.custom_start) && isIsoDate(body.custom_end)) {\n  const a = body.custom_start;\n  const b = body.custom_end;\n  const start = a <= b ? a : b;\n  const end = a <= b ? b : a;\n  periods.push({ key: 'custom', label: `${start} to ${end}`, start, end });\n}\n\nconst out = [];\n\nout.push({\n  json: {\n    run_id: uuid(),\n    triggered_by: detectTrigger(),\n    as_of: asOfIso,\n    supabase_url: SUPABASE_URL,\n    periods,\n  },\n});\n\nreturn out;\n"
+      },
+      "id": "49c34ab9-4ca0-47b8-abcc-c1f00c7a64f4",
+      "name": "Run Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4944,
+        1952
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1cnvt-MsSQ_z9-RO4LWemBj5ts3N5tyt75aJ39OVYNpM",
+          "mode": "list",
+          "cachedResultName": "Copy of Week 2 Sales Source Data",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1cnvt-MsSQ_z9-RO4LWemBj5ts3N5tyt75aJ39OVYNpM/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1cnvt-MsSQ_z9-RO4LWemBj5ts3N5tyt75aJ39OVYNpM/edit#gid=0"
+        },
+        "options": {}
+      },
+      "id": "aa578723-a164-4093-93ea-191fc1c73439",
+      "name": "Get Sales Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        5184,
+        1728
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "LX1rDAGeQ2Ui9XJy",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "airtableOAuth2Api",
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "appGMy1S4HoiVrTdU",
+          "mode": "list",
+          "cachedResultName": "Koya AI Academy",
+          "cachedResultUrl": "https://airtable.com/appGMy1S4HoiVrTdU"
+        },
+        "table": {
+          "__rl": true,
+          "value": "tblm4DIwiP7n41EUX",
+          "mode": "list",
+          "cachedResultName": "Week 2 Project Delivery Source",
+          "cachedResultUrl": "https://airtable.com/appGMy1S4HoiVrTdU/tblm4DIwiP7n41EUX"
+        },
+        "options": {}
+      },
+      "id": "f1c634c6-d2b6-41b9-bb35-d913cc2c9cf8",
+      "name": "Get Delivery Records",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        5184,
+        1952
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "airtableOAuth2Api": {
+          "id": "VfdE43X7GlfriVum",
+          "name": "Airtable account 7"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "https://week2-people-ops-api.vercel.app/api/people-ops",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "0fa737fc-4e76-4b74-819d-107e8f860d04",
+      "name": "Get People Records",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        5184,
+        2160
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shared helpers, prepended by build.js to every Code node that needs them.\n// Not an n8n node on its own -- it declares no items and returns nothing.\n//\n// Everything here follows one rule: a value that cannot be trusted becomes\n// null and is reported, never guessed at. parseDate does not \"do its best\"\n// with 2026-13-45; it returns null and the caller flags the record.\n\nconst PLACEHOLDERS = new Set([\n  '', '-', '--', 'n/a', 'na', 'none', 'null', 'nil', 'unknown', 'tbc', 'tbd', '#n/a',\n]);\n\n/** Trimmed string, or null for blanks and the placeholder words people type\n *  into spreadsheets when they mean \"I don't know\". */\nfunction norm(v) {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  return PLACEHOLDERS.has(s.toLowerCase()) ? null : s;\n}\n\n/** Strict date parse -> 'YYYY-MM-DD' or null.\n *  Accepts ISO (with or without a time part), D/M/Y and D-M-Y. Rejects\n *  impossible calendar dates by round-tripping the components: 2026-13-45\n *  and 31/02/2026 both come back null rather than silently rolling over into\n *  the next month, which is what `new Date()` would do. */\nfunction parseDate(v) {\n  const s = norm(v);\n  if (s === null) return null;\n\n  let y, m, d;\n  let match = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})(?:[T ].*)?$/);\n  if (match) {\n    [, y, m, d] = match;\n  } else {\n    match = s.match(/^(\\d{1,2})[/-](\\d{1,2})[/-](\\d{4})$/);\n    if (!match) return null;\n    [, d, m, y] = match;          // day-first; see SETUP.md if your source is US-order\n  }\n\n  y = Number(y); m = Number(m); d = Number(d);\n  if (m < 1 || m > 12 || d < 1 || d > 31) return null;\n\n  const probe = new Date(Date.UTC(y, m - 1, d));\n  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) {\n    return null;                  // 31 February and friends\n  }\n  return probe.toISOString().slice(0, 10);\n}\n\n/** Money -> number or null. Handles '$1,200', '1 200,50', '(450)' for negative,\n *  and a bare number that arrived as a JS number already. */\nfunction parseAmount(v) {\n  if (typeof v === 'number') return Number.isFinite(v) ? v : null;\n  const s = norm(v);\n  if (s === null) return null;\n\n  const negative = /^\\(.*\\)$/.test(s);\n  let t = s.replace(/[()]/g, '').replace(/[^\\d.,-]/g, '');\n  if (t === '' || t === '-') return null;\n\n  // Decide which separator is the decimal point by looking at the last one.\n  const lastComma = t.lastIndexOf(',');\n  const lastDot = t.lastIndexOf('.');\n  if (lastComma > lastDot) {\n    t = t.replace(/\\./g, '').replace(',', '.');\n  } else {\n    t = t.replace(/,/g, '');\n  }\n\n  const n = Number(t);\n  if (!Number.isFinite(n)) return null;\n  return negative ? -n : n;\n}\n\n/** Inclusive window test on two 'YYYY-MM-DD' strings. String comparison is\n *  correct for ISO dates and avoids dragging a timezone into it. */\nfunction inWindow(iso, start, end) {\n  return iso !== null && iso >= start && iso <= end;\n}\n\nfunction daysBetween(fromIso, toIso) {\n  if (!fromIso || !toIso) return null;\n  const ms = Date.parse(toIso + 'T00:00:00Z') - Date.parse(fromIso + 'T00:00:00Z');\n  return Math.round(ms / 86400000);\n}\n\n/** Division that refuses to invent a number. Returns null when the\n *  denominator is zero or missing -- an empty period must not read as 0%. */\nfunction ratio(numerator, denominator) {\n  if (denominator === null || denominator === undefined || Number(denominator) === 0) return null;\n  return Number(numerator) / Number(denominator);\n}\n\nfunction mean(values) {\n  const nums = values.filter((v) => typeof v === 'number' && Number.isFinite(v));\n  if (nums.length === 0) return null;\n  return nums.reduce((a, b) => a + b, 0) / nums.length;\n}\n\nfunction sum(values) {\n  return values.reduce((a, b) => a + (typeof b === 'number' && Number.isFinite(b) ? b : 0), 0);\n}\n\n/** One metric row, shaped for the metrics table. Used ~30 times in the engine,\n *  so it is worth the four lines. */\nfunction metric(domain, key, value, unit, denominator) {\n  return {\n    domain,\n    metric_key: key,\n    metric_value: (typeof value === 'number' && Number.isFinite(value)) ? value : null,\n    metric_text: typeof value === 'string' ? value : null,\n    unit,\n    denominator: denominator === undefined ? null : denominator,\n  };\n}\n\n\n// Node: \"Normalise Sales\"  (Code, Run Once for All Items)\n// Google Sheets rows -> sales_leads rows, plus a data_quality_issues row for\n// every field that could not be trusted.\n//\n// Emits ONE item carrying arrays, not one item per record: the Merge downstream\n// stays legible with 3 items instead of 300, the Supabase write wants an array\n// body anyway, and the counts have to be computed where the source rows are\n// still in scope.\n//\n// Nothing is dropped and nothing is repaired. A row with a broken date is stored\n// with is_countable = false and named in the issues list; silently skipping it\n// is how a dashboard ends up confidently wrong.\n\n// --- source contract ------------------------------------------------------\n//\n// The ONLY place the sheet's column names appear. Tab `Sheet1` of\n// \"Week 2 Sales Source Data\".\n\nconst FIELD_MAP = {\n  lead_date:       'date',\n  lead_id:         'lead_id',\n  status:          'status',\n  deal_amount:     'deal_amount',\n  marketing_spend: 'marketing_spend',\n  lead_source:     'lead_source',\n};\n\n// The four statuses the source actually uses. Compared lowercased and trimmed.\nconst WON = ['closed won'];\nconst LOST = ['closed lost'];\nconst OPEN = ['qualified', 'proposal sent'];        // the KPI guide's pipeline definition\n\n// --- did the source itself fail? ------------------------------------------\n//\n// The source node is On Error -> Continue, so a 500 arrives here as a single\n// item carrying `error` and nothing else. Treating it as a record would invent\n// one bogus row and, worse, report the source as healthy. A failed source is\n// reported as failed; that is a different fact from a quiet month.\n\nconst inputItems = $input.all();\nconst failed = inputItems.length > 0\n  && inputItems.every((it) => (it.json || {}).error !== undefined);\n\nif (failed) {\n  const rawError = (inputItems[0].json || {}).error;\n  const message = typeof rawError === 'string'\n    ? rawError\n    : (rawError && rawError.message) || 'Source node reported an error.';\n  return [{\n    json: {\n      source: 'sales',\n      failed: true,\n      error: message,\n      rows: [],\n      issues: [],\n      counts: { fetched: 0, kept: 0, excluded: 0 },\n    },\n  }];\n}\n\nconst run = $('Run Config').first().json;\n\nconst rows = [];\nconst issues = [];\nlet fetched = 0;\n\nfor (const item of inputItems) {\n  const j = item.json || {};\n  fetched += 1;\n\n  // The Sheets node supplies row_number. It is the only durable handle back to\n  // the source row, so every issue and every stored record carries it.\n  const ref = j.row_number === undefined ? null : String(j.row_number);\n  const flags = [];\n\n  const pick = (key) => j[FIELD_MAP[key]];\n\n  const note = (type, detail) => {\n    flags.push(type);\n    issues.push({ run_id: run.run_id, source: 'sales', source_row_ref: ref, issue_type: type, detail });\n  };\n\n  const leadId = norm(pick('lead_id'));\n  const statusRaw = norm(pick('status'));\n  const status = statusRaw === null ? null : statusRaw.toLowerCase();\n  const leadDate = parseDate(pick('lead_date'));\n  const leadSource = norm(pick('lead_source'));\n\n  const rawAmount = pick('deal_amount');\n  const rawSpend = pick('marketing_spend');\n  const dealAmount = parseAmount(rawAmount);\n  const marketingSpend = parseAmount(rawSpend);\n\n  // --- flag, do not repair ------------------------------------------------\n\n  if (leadId === null) note('missing_identifier', 'lead_id is blank.');\n  if (statusRaw === null) {\n    note('missing_status', 'status is blank, so this lead cannot be counted as won, lost or open.');\n  } else if (![...WON, ...LOST, ...OPEN].includes(status)) {\n    note('unknown_status', `status \"${statusRaw}\" is not one of Closed Won, Closed Lost, Qualified, Proposal Sent.`);\n  }\n\n  if (leadDate === null && norm(pick('lead_date')) !== null) {\n    note('invalid_date', `date \"${String(rawAmount === undefined ? '' : pick('lead_date'))}\" is not a real calendar date.`);\n  } else if (leadDate === null) {\n    note('missing_date', 'date is blank, so this lead falls into no reporting period.');\n  }\n\n  // deal_amount is legitimately 0 on a Closed Lost row -- that is a value, not a\n  // gap. Only a blank or unparseable amount is a problem.\n  if (dealAmount === null && norm(rawAmount) !== null) {\n    note('invalid_amount', `deal_amount \"${String(rawAmount)}\" is not a number.`);\n  } else if (dealAmount === null) {\n    note('missing_amount', 'deal_amount is blank.');\n  }\n\n  if (marketingSpend === null && norm(rawSpend) !== null) {\n    note('invalid_amount', `marketing_spend \"${String(rawSpend)}\" is not a number.`);\n  } else if (marketingSpend === null) {\n    note('missing_cost', 'marketing_spend is blank, so cost per lead may be understated.');\n  }\n\n  if (leadSource === null) note('missing_lead_source', 'lead_source is blank; revenue by lead source cannot attribute this row.');\n\n  const isEmptyRow = leadId === null && statusRaw === null && leadDate === null && dealAmount === null;\n  if (isEmptyRow) note('empty_record', 'Row carries no lead id, status, date or amount.');\n\n  const isWon = status === null ? null : WON.includes(status);\n  const isLost = status === null ? null : LOST.includes(status);\n  const isOpen = status === null ? null : OPEN.includes(status);\n\n  // is_countable gates VALUE metrics. An uncountable row is still stored, still\n  // counted in records_excluded, still shown on the dashboard.\n  const isCountable = !isEmptyRow && leadDate !== null && statusRaw !== null;\n\n  rows.push({\n    run_id: run.run_id,\n    source_row_ref: ref,\n    lead_id: leadId,\n    lead_date: leadDate,\n    status: statusRaw,\n    deal_amount: dealAmount,\n    marketing_spend: marketingSpend,\n    lead_source: leadSource,\n    is_won: isWon,\n    is_lost: isLost,\n    is_open: isOpen,\n    quality_flags: flags,\n    is_countable: isCountable,\n  });\n}\n\nconst out = [];\n\nout.push({\n  json: {\n    source: 'sales',\n    failed: false,\n    rows,\n    issues,\n    counts: {\n      fetched,\n      kept: rows.length,\n      excluded: rows.filter((r) => !r.is_countable).length,\n    },\n  },\n});\n\nreturn out;\n"
+      },
+      "id": "ae4812c3-7303-4423-81d5-f93858e9bf84",
+      "name": "Normalise Sales",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5424,
+        1728
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shared helpers, prepended by build.js to every Code node that needs them.\n// Not an n8n node on its own -- it declares no items and returns nothing.\n//\n// Everything here follows one rule: a value that cannot be trusted becomes\n// null and is reported, never guessed at. parseDate does not \"do its best\"\n// with 2026-13-45; it returns null and the caller flags the record.\n\nconst PLACEHOLDERS = new Set([\n  '', '-', '--', 'n/a', 'na', 'none', 'null', 'nil', 'unknown', 'tbc', 'tbd', '#n/a',\n]);\n\n/** Trimmed string, or null for blanks and the placeholder words people type\n *  into spreadsheets when they mean \"I don't know\". */\nfunction norm(v) {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  return PLACEHOLDERS.has(s.toLowerCase()) ? null : s;\n}\n\n/** Strict date parse -> 'YYYY-MM-DD' or null.\n *  Accepts ISO (with or without a time part), D/M/Y and D-M-Y. Rejects\n *  impossible calendar dates by round-tripping the components: 2026-13-45\n *  and 31/02/2026 both come back null rather than silently rolling over into\n *  the next month, which is what `new Date()` would do. */\nfunction parseDate(v) {\n  const s = norm(v);\n  if (s === null) return null;\n\n  let y, m, d;\n  let match = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})(?:[T ].*)?$/);\n  if (match) {\n    [, y, m, d] = match;\n  } else {\n    match = s.match(/^(\\d{1,2})[/-](\\d{1,2})[/-](\\d{4})$/);\n    if (!match) return null;\n    [, d, m, y] = match;          // day-first; see SETUP.md if your source is US-order\n  }\n\n  y = Number(y); m = Number(m); d = Number(d);\n  if (m < 1 || m > 12 || d < 1 || d > 31) return null;\n\n  const probe = new Date(Date.UTC(y, m - 1, d));\n  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) {\n    return null;                  // 31 February and friends\n  }\n  return probe.toISOString().slice(0, 10);\n}\n\n/** Money -> number or null. Handles '$1,200', '1 200,50', '(450)' for negative,\n *  and a bare number that arrived as a JS number already. */\nfunction parseAmount(v) {\n  if (typeof v === 'number') return Number.isFinite(v) ? v : null;\n  const s = norm(v);\n  if (s === null) return null;\n\n  const negative = /^\\(.*\\)$/.test(s);\n  let t = s.replace(/[()]/g, '').replace(/[^\\d.,-]/g, '');\n  if (t === '' || t === '-') return null;\n\n  // Decide which separator is the decimal point by looking at the last one.\n  const lastComma = t.lastIndexOf(',');\n  const lastDot = t.lastIndexOf('.');\n  if (lastComma > lastDot) {\n    t = t.replace(/\\./g, '').replace(',', '.');\n  } else {\n    t = t.replace(/,/g, '');\n  }\n\n  const n = Number(t);\n  if (!Number.isFinite(n)) return null;\n  return negative ? -n : n;\n}\n\n/** Inclusive window test on two 'YYYY-MM-DD' strings. String comparison is\n *  correct for ISO dates and avoids dragging a timezone into it. */\nfunction inWindow(iso, start, end) {\n  return iso !== null && iso >= start && iso <= end;\n}\n\nfunction daysBetween(fromIso, toIso) {\n  if (!fromIso || !toIso) return null;\n  const ms = Date.parse(toIso + 'T00:00:00Z') - Date.parse(fromIso + 'T00:00:00Z');\n  return Math.round(ms / 86400000);\n}\n\n/** Division that refuses to invent a number. Returns null when the\n *  denominator is zero or missing -- an empty period must not read as 0%. */\nfunction ratio(numerator, denominator) {\n  if (denominator === null || denominator === undefined || Number(denominator) === 0) return null;\n  return Number(numerator) / Number(denominator);\n}\n\nfunction mean(values) {\n  const nums = values.filter((v) => typeof v === 'number' && Number.isFinite(v));\n  if (nums.length === 0) return null;\n  return nums.reduce((a, b) => a + b, 0) / nums.length;\n}\n\nfunction sum(values) {\n  return values.reduce((a, b) => a + (typeof b === 'number' && Number.isFinite(b) ? b : 0), 0);\n}\n\n/** One metric row, shaped for the metrics table. Used ~30 times in the engine,\n *  so it is worth the four lines. */\nfunction metric(domain, key, value, unit, denominator) {\n  return {\n    domain,\n    metric_key: key,\n    metric_value: (typeof value === 'number' && Number.isFinite(value)) ? value : null,\n    metric_text: typeof value === 'string' ? value : null,\n    unit,\n    denominator: denominator === undefined ? null : denominator,\n  };\n}\n\n\n// Node: \"Normalise Delivery\"  (Code, Run Once for All Items)\n// Airtable records -> delivery_projects rows, plus data_quality_issues.\n// Same contract as Normalise Sales: one item out, carrying arrays.\n\n// --- source contract ------------------------------------------------------\n//\n// Base \"Week 2 Project Delivery Source\", table `Projects`.\n\nconst FIELD_MAP = {\n  project_id:     'project_id',\n  project_name:   'project_name',\n  team:           'team',\n  owner:          'owner',\n  kickoff_date:   'kickoff_date',\n  due_date:       'due_date',\n  completed_date: 'completed_date',\n  status:         'status',\n  budgeted_cost:  'budgeted_cost',\n  actual_cost:    'actual_cost',\n};\n\nconst COMPLETED = ['completed'];\nconst BLOCKED = ['blocked'];\nconst IN_PROGRESS = ['in progress'];\n\n// --- did the source itself fail? ------------------------------------------\n\nconst inputItems = $input.all();\nconst failed = inputItems.length > 0\n  && inputItems.every((it) => (it.json || {}).error !== undefined);\n\nif (failed) {\n  const rawError = (inputItems[0].json || {}).error;\n  const message = typeof rawError === 'string'\n    ? rawError\n    : (rawError && rawError.message) || 'Source node reported an error.';\n  return [{\n    json: {\n      source: 'delivery',\n      failed: true,\n      error: message,\n      rows: [],\n      issues: [],\n      counts: { fetched: 0, kept: 0, excluded: 0 },\n    },\n  }];\n}\n\nconst run = $('Run Config').first().json;\n\nconst rows = [];\nconst issues = [];\nlet fetched = 0;\n\nfor (const item of inputItems) {\n  const j = item.json || {};\n  fetched += 1;\n\n  // The Airtable node has shipped both shapes: fields nested under `fields`, and\n  // fields flattened onto json alongside `id`. Accept either rather than pinning\n  // to whichever this instance happens to return today.\n  const f = (j.fields && typeof j.fields === 'object') ? j.fields : j;\n  const ref = norm(j.id) || null;\n  const flags = [];\n\n  const pick = (key) => f[FIELD_MAP[key]];\n\n  const note = (type, detail) => {\n    flags.push(type);\n    issues.push({ run_id: run.run_id, source: 'delivery', source_row_ref: ref, issue_type: type, detail });\n  };\n\n  const projectId = norm(pick('project_id'));\n  const statusRaw = norm(pick('status'));\n  const status = statusRaw === null ? null : statusRaw.toLowerCase();\n  const team = norm(pick('team'));\n\n  const kickoffDate = parseDate(pick('kickoff_date'));\n  const dueDate = parseDate(pick('due_date'));\n  const completedDate = parseDate(pick('completed_date'));\n\n  const budgeted = parseAmount(pick('budgeted_cost'));\n  const actual = parseAmount(pick('actual_cost'));\n\n  if (projectId === null) note('missing_identifier', 'project_id is blank.');\n  if (statusRaw === null) {\n    note('missing_status', 'status is blank, so this project cannot be counted as active, blocked or completed.');\n  } else if (![...COMPLETED, ...BLOCKED, ...IN_PROGRESS].includes(status)) {\n    note('unknown_status', `status \"${statusRaw}\" is not one of Completed, In Progress, Blocked.`);\n  }\n  if (team === null) note('missing_team', 'team is blank; delivery load by team cannot attribute this project.');\n\n  if (kickoffDate === null && norm(pick('kickoff_date')) !== null) {\n    note('invalid_date', `kickoff_date \"${String(pick('kickoff_date'))}\" is not a real calendar date.`);\n  }\n  // The KPI guide names these three explicitly: keep the record, add a warning.\n  if (dueDate === null) {\n    note(norm(pick('due_date')) === null ? 'missing_date' : 'invalid_date',\n      'due_date is blank or invalid, so this project cannot be judged on time or late.');\n  }\n  const isCompleted = status === null ? null : COMPLETED.includes(status);\n  if (isCompleted === true && completedDate === null) {\n    note(norm(pick('completed_date')) === null ? 'missing_date' : 'invalid_date',\n      'status is Completed but completed_date is blank or invalid, so this completion falls into no period.');\n  }\n  if (completedDate === null && norm(pick('completed_date')) !== null) {\n    note('invalid_date', `completed_date \"${String(pick('completed_date'))}\" is not a real calendar date.`);\n  }\n\n  if (budgeted === null) {\n    note(norm(pick('budgeted_cost')) === null ? 'missing_cost' : 'invalid_amount',\n      'budgeted_cost is blank or invalid, so budget variance excludes this project.');\n  }\n  if (actual === null) {\n    note(norm(pick('actual_cost')) === null ? 'missing_cost' : 'invalid_amount',\n      'actual_cost is blank or invalid, so budget variance excludes this project.');\n  }\n\n  // A record that contradicts itself: report it, do not pick a winner.\n  if (completedDate && kickoffDate && completedDate < kickoffDate) {\n    note('inconsistent_dates', `completed_date ${completedDate} is before kickoff_date ${kickoffDate}.`);\n  }\n\n  const isBlocked = status === null ? null : BLOCKED.includes(status);\n  const isInProgress = status === null ? null : IN_PROGRESS.includes(status);\n\n  const isCountable = projectId !== null && statusRaw !== null;\n\n  rows.push({\n    run_id: run.run_id,\n    source_row_ref: ref,\n    project_id: projectId,\n    project_name: norm(pick('project_name')),\n    team,\n    owner: norm(pick('owner')),\n    kickoff_date: kickoffDate,\n    due_date: dueDate,\n    completed_date: completedDate,\n    status: statusRaw,\n    budgeted_cost: budgeted,\n    actual_cost: actual,\n    is_completed: isCompleted,\n    is_blocked: isBlocked,\n    is_in_progress: isInProgress,\n    quality_flags: flags,\n    is_countable: isCountable,\n  });\n}\n\nconst out = [];\n\nout.push({\n  json: {\n    source: 'delivery',\n    failed: false,\n    rows,\n    issues,\n    counts: {\n      fetched,\n      kept: rows.length,\n      excluded: rows.filter((r) => !r.is_countable).length,\n    },\n  },\n});\n\nreturn out;\n"
+      },
+      "id": "cfcf5117-c068-45e2-9895-de771b4e0ddf",
+      "name": "Normalise Delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5424,
+        1952
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shared helpers, prepended by build.js to every Code node that needs them.\n// Not an n8n node on its own -- it declares no items and returns nothing.\n//\n// Everything here follows one rule: a value that cannot be trusted becomes\n// null and is reported, never guessed at. parseDate does not \"do its best\"\n// with 2026-13-45; it returns null and the caller flags the record.\n\nconst PLACEHOLDERS = new Set([\n  '', '-', '--', 'n/a', 'na', 'none', 'null', 'nil', 'unknown', 'tbc', 'tbd', '#n/a',\n]);\n\n/** Trimmed string, or null for blanks and the placeholder words people type\n *  into spreadsheets when they mean \"I don't know\". */\nfunction norm(v) {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  return PLACEHOLDERS.has(s.toLowerCase()) ? null : s;\n}\n\n/** Strict date parse -> 'YYYY-MM-DD' or null.\n *  Accepts ISO (with or without a time part), D/M/Y and D-M-Y. Rejects\n *  impossible calendar dates by round-tripping the components: 2026-13-45\n *  and 31/02/2026 both come back null rather than silently rolling over into\n *  the next month, which is what `new Date()` would do. */\nfunction parseDate(v) {\n  const s = norm(v);\n  if (s === null) return null;\n\n  let y, m, d;\n  let match = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})(?:[T ].*)?$/);\n  if (match) {\n    [, y, m, d] = match;\n  } else {\n    match = s.match(/^(\\d{1,2})[/-](\\d{1,2})[/-](\\d{4})$/);\n    if (!match) return null;\n    [, d, m, y] = match;          // day-first; see SETUP.md if your source is US-order\n  }\n\n  y = Number(y); m = Number(m); d = Number(d);\n  if (m < 1 || m > 12 || d < 1 || d > 31) return null;\n\n  const probe = new Date(Date.UTC(y, m - 1, d));\n  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) {\n    return null;                  // 31 February and friends\n  }\n  return probe.toISOString().slice(0, 10);\n}\n\n/** Money -> number or null. Handles '$1,200', '1 200,50', '(450)' for negative,\n *  and a bare number that arrived as a JS number already. */\nfunction parseAmount(v) {\n  if (typeof v === 'number') return Number.isFinite(v) ? v : null;\n  const s = norm(v);\n  if (s === null) return null;\n\n  const negative = /^\\(.*\\)$/.test(s);\n  let t = s.replace(/[()]/g, '').replace(/[^\\d.,-]/g, '');\n  if (t === '' || t === '-') return null;\n\n  // Decide which separator is the decimal point by looking at the last one.\n  const lastComma = t.lastIndexOf(',');\n  const lastDot = t.lastIndexOf('.');\n  if (lastComma > lastDot) {\n    t = t.replace(/\\./g, '').replace(',', '.');\n  } else {\n    t = t.replace(/,/g, '');\n  }\n\n  const n = Number(t);\n  if (!Number.isFinite(n)) return null;\n  return negative ? -n : n;\n}\n\n/** Inclusive window test on two 'YYYY-MM-DD' strings. String comparison is\n *  correct for ISO dates and avoids dragging a timezone into it. */\nfunction inWindow(iso, start, end) {\n  return iso !== null && iso >= start && iso <= end;\n}\n\nfunction daysBetween(fromIso, toIso) {\n  if (!fromIso || !toIso) return null;\n  const ms = Date.parse(toIso + 'T00:00:00Z') - Date.parse(fromIso + 'T00:00:00Z');\n  return Math.round(ms / 86400000);\n}\n\n/** Division that refuses to invent a number. Returns null when the\n *  denominator is zero or missing -- an empty period must not read as 0%. */\nfunction ratio(numerator, denominator) {\n  if (denominator === null || denominator === undefined || Number(denominator) === 0) return null;\n  return Number(numerator) / Number(denominator);\n}\n\nfunction mean(values) {\n  const nums = values.filter((v) => typeof v === 'number' && Number.isFinite(v));\n  if (nums.length === 0) return null;\n  return nums.reduce((a, b) => a + b, 0) / nums.length;\n}\n\nfunction sum(values) {\n  return values.reduce((a, b) => a + (typeof b === 'number' && Number.isFinite(b) ? b : 0), 0);\n}\n\n/** One metric row, shaped for the metrics table. Used ~30 times in the engine,\n *  so it is worth the four lines. */\nfunction metric(domain, key, value, unit, denominator) {\n  return {\n    domain,\n    metric_key: key,\n    metric_value: (typeof value === 'number' && Number.isFinite(value)) ? value : null,\n    metric_text: typeof value === 'string' ? value : null,\n    unit,\n    denominator: denominator === undefined ? null : denominator,\n  };\n}\n\n\n// Node: \"Normalise People\"  (Code, Run Once for All Items)\n// People Ops API records -> people_records rows, plus data_quality_issues.\n//\n// The API returns an envelope, not a bare array:\n//   { source, record_count, total_available_records, query, schema, records: [...] }\n// so the HTTP Request node hands this one item, not one item per employee. The\n// unwrap below also accepts a bare array and the data/results shapes, because\n// which one an endpoint returns is not something to discover on submission day.\n\n// --- source contract ------------------------------------------------------\n\nconst FIELD_MAP = {\n  employee_id:         'employee_id',\n  department:          'department',\n  role:                'role',\n  application_date:    'application_date',\n  offer_accepted_date: 'offer_accepted_date',\n  start_date:          'start_date',\n  exit_date:           'exit_date',\n  status:              'status',\n};\n\n// Declared, not inferred. A department with no records in the selected period\n// has to be reportable, and you cannot notice the absence of something you only\n// ever learned about from the data itself.\nconst EXPECTED_DEPARTMENTS = ['Sales', 'Delivery', 'Engineering', 'People Ops'];\n\n// A Candidate has applied but not started. They are not headcount and never were.\nconst STATUSES = ['active', 'exited', 'candidate'];\n\n// --- did the source itself fail? ------------------------------------------\n\nconst inputItems = $input.all();\nconst failed = inputItems.length > 0\n  && inputItems.every((it) => (it.json || {}).error !== undefined);\n\nif (failed) {\n  const rawError = (inputItems[0].json || {}).error;\n  const message = typeof rawError === 'string'\n    ? rawError\n    : (rawError && rawError.message) || 'Source node reported an error.';\n  return [{\n    json: {\n      source: 'people',\n      failed: true,\n      error: message,\n      rows: [],\n      issues: [],\n      expected_departments: EXPECTED_DEPARTMENTS,\n      counts: { fetched: 0, kept: 0, excluded: 0 },\n    },\n  }];\n}\n\nconst run = $('Run Config').first().json;\n\n// --- unwrap ---------------------------------------------------------------\n\nconst raw = [];\nlet reportedTotal = null;\nlet queryWasFiltered = false;\n\nfor (const item of inputItems) {\n  const j = item.json || {};\n  if (j.total_available_records !== undefined) reportedTotal = j.total_available_records;\n  // total_available_records is the size of the WHOLE population, so it only\n  // tells us about truncation when the request asked for all of it.\n  if (j.query && typeof j.query === 'object') {\n    queryWasFiltered = Object.values(j.query).some((v) => v !== null && v !== '');\n  }\n\n  const wrapped = Array.isArray(j) ? j\n    : Array.isArray(j.records) ? j.records\n      : Array.isArray(j.data) ? j.data\n        : Array.isArray(j.results) ? j.results\n          : null;\n  if (wrapped) {\n    for (const r of wrapped) raw.push(r || {});\n  } else if (j.employee_id !== undefined || j.application_date !== undefined) {\n    raw.push(j);          // already split into one item per employee\n  }\n}\n\nconst rows = [];\nconst issues = [];\nlet fetched = 0;\n\nfor (let i = 0; i < raw.length; i++) {\n  const j = raw[i] || {};\n  fetched += 1;\n\n  const pick = (key) => j[FIELD_MAP[key]];\n  const ref = norm(pick('employee_id')) || `index_${i}`;\n  const flags = [];\n\n  const note = (type, detail) => {\n    flags.push(type);\n    issues.push({ run_id: run.run_id, source: 'people', source_row_ref: ref, issue_type: type, detail });\n  };\n\n  const employeeId = norm(pick('employee_id'));\n  const department = norm(pick('department'));\n  const statusRaw = norm(pick('status'));\n  const status = statusRaw === null ? null : statusRaw.toLowerCase();\n\n  const applicationDate = parseDate(pick('application_date'));\n  const offerAcceptedDate = parseDate(pick('offer_accepted_date'));\n  const startDate = parseDate(pick('start_date'));\n  const exitDate = parseDate(pick('exit_date'));\n\n  if (employeeId === null) note('missing_identifier', 'employee_id is blank; addressed by position instead.');\n  if (department === null) note('missing_department', 'department is blank; headcount by department cannot attribute this person.');\n  if (statusRaw === null) {\n    note('missing_status', 'status is blank, so this person cannot be counted in headcount.');\n  } else if (!STATUSES.includes(status)) {\n    note('unknown_status', `status \"${statusRaw}\" is not one of Active, Exited, Candidate.`);\n  }\n\n  if (applicationDate === null) {\n    note(norm(pick('application_date')) === null ? 'missing_date' : 'invalid_date',\n      'application_date is blank or invalid, so time to hire and offer acceptance time exclude this record.');\n  }\n  if (startDate === null && norm(pick('start_date')) !== null) {\n    note('invalid_date', `start_date \"${String(pick('start_date'))}\" is not a real calendar date.`);\n  }\n  if (exitDate === null && norm(pick('exit_date')) !== null) {\n    note('invalid_date', `exit_date \"${String(pick('exit_date'))}\" is not a real calendar date.`);\n  }\n  if (offerAcceptedDate === null && norm(pick('offer_accepted_date')) !== null) {\n    note('invalid_date', `offer_accepted_date \"${String(pick('offer_accepted_date'))}\" is not a real calendar date.`);\n  }\n\n  // The two contradictions that quietly distort People Ops numbers.\n  if (status === 'exited' && exitDate === null) {\n    note('missing_exit_date', 'status is Exited but exit_date is blank, so this exit cannot be dated into a period.');\n  }\n  if (status === 'active' && startDate === null) {\n    note('missing_start_date', 'status is Active but start_date is blank, so this person cannot be counted in headcount.');\n  }\n  if (startDate && exitDate && exitDate < startDate) {\n    note('inconsistent_dates', `exit_date ${exitDate} is before start_date ${startDate}.`);\n  }\n\n  const isCountable = statusRaw !== null;\n\n  rows.push({\n    run_id: run.run_id,\n    source_row_ref: ref,\n    employee_id: employeeId,\n    department,\n    role: norm(pick('role')),\n    status: statusRaw,\n    application_date: applicationDate,\n    offer_accepted_date: offerAcceptedDate,\n    start_date: startDate,\n    exit_date: exitDate,\n    quality_flags: flags,\n    is_countable: isCountable,\n  });\n}\n\n// The endpoint reports how many records exist in total. If we asked for all of\n// them and received fewer, we are looking at a truncated report, and saying so\n// beats quietly under-reporting every headcount on the dashboard.\nif (reportedTotal !== null && !queryWasFiltered && Number(reportedTotal) !== fetched) {\n  issues.push({\n    run_id: run.run_id,\n    source: 'people',\n    source_row_ref: null,\n    issue_type: 'truncated_response',\n    detail: `API reports ${reportedTotal} available records but ${fetched} were received.`,\n  });\n}\n\nconst out = [];\n\nout.push({\n  json: {\n    source: 'people',\n    failed: false,\n    rows,\n    issues,\n    expected_departments: EXPECTED_DEPARTMENTS,\n    counts: {\n      fetched,\n      kept: rows.length,\n      excluded: rows.filter((r) => !r.is_countable).length,\n    },\n  },\n});\n\nreturn out;\n"
+      },
+      "id": "09573e59-5500-4e4f-a339-27374d890475",
+      "name": "Normalise People",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5424,
+        2160
+      ]
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "id": "fa1bd7af-bc0c-4c58-954a-e97a16bc5168",
+      "name": "Merge Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        5664,
+        1952
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Assemble Facts\"  (Code, Run Once for All Items)\n// The convergence point. Three source branches arrive as three items; one item\n// leaves, holding every cleaned record, every quality issue, and the counts.\n//\n// A source whose node failed still arrives here, because each source node is set\n// to On Error -> Continue. It arrives as an error item with no rows, and that is\n// recorded as a failed source rather than as a department that had a quiet month.\n// The difference matters: one is a data problem, the other is a business fact,\n// and Claude is told which it is looking at.\n\nconst run = $('Run Config').first().json;\n\nconst facts = { sales: [], delivery: [], people: [] };\nconst issues = [];\nconst sourceCounts = {};\nconst sourcesFailed = [];\nlet expectedDepartments = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n\n  // A normaliser that saw an upstream failure says so outright with failed:true.\n  // A raw n8n error item that reached here some other way carries `error` and no\n  // source name. Both are the same fact: this source did not report.\n  if (j.failed === true || j.error || !j.source) {\n    const rawError = j.error;\n    const message = typeof rawError === 'string'\n      ? rawError\n      : (rawError && rawError.message) || 'Source node returned no data.';\n    sourcesFailed.push({ source: j.source || 'unknown', message });\n    continue;\n  }\n\n  facts[j.source] = Array.isArray(j.rows) ? j.rows : [];\n  for (const issue of (Array.isArray(j.issues) ? j.issues : [])) issues.push(issue);\n  sourceCounts[j.source] = j.counts || { fetched: 0, kept: 0, excluded: 0 };\n\n  // The declared department list travels with the people branch. It is declared\n  // rather than inferred: a department with no records has to be reportable, and\n  // you cannot notice the absence of something you only learned from the data.\n  if (j.source === 'people' && Array.isArray(j.expected_departments)) {\n    expectedDepartments = j.expected_departments;\n  }\n}\n\n// A source that never reported at all still needs a zeroed entry, otherwise the\n// summary silently omits it and \"no sales data\" reads as \"no sales\".\nfor (const source of ['sales', 'delivery', 'people']) {\n  if (!sourceCounts[source]) {\n    sourceCounts[source] = { fetched: 0, kept: 0, excluded: 0 };\n    if (!sourcesFailed.some((f) => f.source === source)) {\n      sourcesFailed.push({ source, message: 'Source produced no items.' });\n    }\n  }\n}\n\nconst out = [];\n\nout.push({\n  json: {\n    run_id: run.run_id,\n    as_of: run.as_of,\n    triggered_by: run.triggered_by,\n    periods: run.periods,\n    facts,\n    issues,\n    source_counts: sourceCounts,\n    sources_failed: sourcesFailed.map((f) => f.source),\n    sources_failed_detail: sourcesFailed,\n    // departments_with_no_data is NOT computed here: it is per-period, and a\n    // department can be quiet for 30 days and busy year to date. The metric\n    // engine derives it inside the loop.\n    expected_departments: expectedDepartments,\n    totals: {\n      fetched: Object.values(sourceCounts).reduce((a, c) => a + (c.fetched || 0), 0),\n      kept: Object.values(sourceCounts).reduce((a, c) => a + (c.kept || 0), 0),\n      excluded: Object.values(sourceCounts).reduce((a, c) => a + (c.excluded || 0), 0),\n    },\n  },\n});\n\nreturn out;\n"
+      },
+      "id": "a6b6f767-aae4-4a0b-b570-704205c790cf",
+      "name": "Assemble Facts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5888,
+        1952
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Source Fingerprint\"  (Code, Run Once for All Items)\n// Hashes everything that determines this run's output.\n//\n// Two runs with the same fingerprint would produce byte-identical metrics and\n// byte-identical insights, so the second one has nothing to add and can return\n// the first instead. Most Refresh clicks land on unchanged sources; without\n// this, each one spends a Claude call restating what is already on screen.\n//\n// WHAT GOES INTO THE HASH -- and why each part has to:\n//   * as_of          -- moves every window\n//   * the periods    -- a custom range changes what is computed, even though the\n//                       source records are identical. Leave this out and asking\n//                       for a custom window would be skipped and never computed.\n//   * every normalised fact row, minus run_id, which differs by construction\n//\n// What is deliberately NOT in it: the trigger type, timestamps, and the issue\n// list (which is derived from the rows and so already covered).\n\nconst facts = $('Assemble Facts').first().json;\n\n// FNV-1a, twice with different offsets, concatenated. Not cryptographic -- it\n// only has to make an accidental collision between two different data sets\n// implausible, and 64 bits is far more than enough for that.\nfunction fnv1a(str, seed) {\n  let h = seed >>> 0;\n  for (let i = 0; i < str.length; i++) {\n    h ^= str.charCodeAt(i);\n    h = Math.imul(h, 0x01000193) >>> 0;\n  }\n  return h;\n}\n\nfunction hash(str) {\n  const a = fnv1a(str, 0x811c9dc5);\n  const b = fnv1a(str, 0x9e3779b9);\n  return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0');\n}\n\n// Keys are sorted so the hash cannot change just because a normaliser started\n// emitting its fields in a different order.\nfunction canonical(value) {\n  if (value === null || value === undefined) return 'null';\n  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';\n  if (typeof value === 'object') {\n    return '{' + Object.keys(value).sort()\n      .filter((k) => k !== 'run_id')\n      .map((k) => k + ':' + canonical(value[k]))\n      .join(',') + '}';\n  }\n  return String(value);\n}\n\nconst material = canonical({\n  as_of: facts.as_of,\n  periods: (facts.periods || []).map((p) => [p.key, p.start, p.end]),\n  sales: facts.facts.sales || [],\n  delivery: facts.facts.delivery || [],\n  people: facts.facts.people || [],\n});\n\nconst out = [];\n\nout.push({\n  json: {\n    run_id: facts.run_id,\n    triggered_by: facts.triggered_by,\n    source_fingerprint: hash(material),\n    fingerprint_bytes: material.length,\n  },\n});\n\nreturn out;\n"
+      },
+      "id": "e59ca2c8-0d33-429a-9b12-d8761709d40b",
+      "name": "Source Fingerprint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6096,
+        1952
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/runs?select=run_id,started_at&status=eq.complete&source_fingerprint=eq.{{ $('Source Fingerprint').first().json.source_fingerprint }}&order=started_at.desc&limit=1",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "id": "0d629ce4-5b1c-4233-9b81-b4655f173fa3",
+      "name": "Check Fingerprint",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        6320,
+        1952
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Decide Skip\"  (Code, Run Once for All Items)\n// Reads the fingerprint lookup and decides whether this run has anything to add.\n//\n// Skip when: a completed run already carries this exact fingerprint, AND this\n// run was not started by the schedule.\n//\n// The schedule never skips. Its whole purpose is to lay down a daily history\n// point, and a history that omits the days nothing changed is not a history --\n// it is a history with holes in exactly the places a reader would want to see\n// stability. Refresh and the custom-range button are the ones worth\n// short-circuiting: they are someone waiting at a screen.\n\nconst fingerprint = $('Source Fingerprint').first().json;\nconst facts = $('Assemble Facts').first().json;\n\n// Rows the lookup returned, if any. The node is alwaysOutputData, so an empty\n// result arrives as a single item with no run_id rather than as zero items.\nconst matches = [];\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  if (j.run_id) matches.push(j);\n}\n\nconst match = matches[0] || null;\nconst isScheduled = facts.triggered_by === 'schedule';\nconst skip = Boolean(match) && !isScheduled;\n\nconst reason = skip\n  ? `Sources, reference date and period windows are unchanged since the run of ${match.started_at}. Recomputing could only produce the same numbers.`\n  : match\n    ? 'Fingerprint matches an earlier run, but this run is scheduled and the daily history point is the point of it.'\n    : 'No completed run carries this fingerprint, so something has changed.';\n\nconst out = [];\n\nout.push({\n  json: {\n    run_id: facts.run_id,\n    triggered_by: facts.triggered_by,\n    source_fingerprint: fingerprint.source_fingerprint,\n    skip_run: skip,\n    matched_run_id: match ? match.run_id : null,\n    matched_started_at: match ? match.started_at : null,\n    reason,\n  },\n});\n\nreturn out;\n"
+      },
+      "id": "1796117d-92d6-4292-abca-d99fe9baa2a6",
+      "name": "Decide Skip",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6544,
+        1952
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "sources-unchanged-c",
+              "leftValue": "={{ $json.skip_run }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b5d96d7e-7d6d-4a6c-bfbe-777318f0bb53",
+      "name": "Sources Unchanged?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        6768,
+        1952
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/runs?run_id=eq.{{ $json.matched_run_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ last_checked_at: new Date().toISOString() }) }}",
+        "options": {}
+      },
+      "id": "0bb7e9f0-ebbb-4492-bdc3-6d5185c93667",
+      "name": "Skipped - Sources Unchanged",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        6976,
+        1760
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Build Write Payloads\"  (Code, Run Once for All Items)\n// Shapes every array that gets POSTed to PostgREST, on one item, so each HTTP\n// node's body is a single expression: {{ JSON.stringify($json.sales_rows) }}.\n//\n// One POST with an array body per table, not one POST per record. n8n's Supabase\n// node inserts item by item; nine hundred deals would be nine hundred HTTP calls.\n//\n// Also strips any internal underscore field. Posting an unknown column to\n// PostgREST is a 400, and a stray \"_flag\" would take the whole run down.\n\nconst INTERNAL = /^_/;\n\nfunction strip(row) {\n  const clean = {};\n  for (const [k, v] of Object.entries(row)) {\n    if (!INTERNAL.test(k)) clean[k] = v;\n  }\n  return clean;\n}\n\nconst facts = $('Assemble Facts').first().json;\nconst fingerprint = $('Source Fingerprint').first().json;\n\nconst out = [];\n\nout.push({\n  json: {\n    run_id: facts.run_id,\n    as_of: facts.as_of,\n    // The runs row, written before the facts so a crash mid-write still leaves a\n    // row saying a run started and never completed.\n    run_row: {\n      run_id: facts.run_id,\n      status: 'running',\n      triggered_by: facts.triggered_by,\n      as_of: facts.as_of,\n      source_counts: facts.source_counts,\n      // Stamped now, so the next run can recognise unchanged sources and skip.\n      source_fingerprint: fingerprint.source_fingerprint,\n    },\n    sales_rows: (facts.facts.sales || []).map(strip),\n    delivery_rows: (facts.facts.delivery || []).map(strip),\n    people_rows: (facts.facts.people || []).map(strip),\n    issue_rows: facts.issues || [],\n    counts: {\n      sales: (facts.facts.sales || []).length,\n      delivery: (facts.facts.delivery || []).length,\n      people: (facts.facts.people || []).length,\n      issues: (facts.issues || []).length,\n    },\n  },\n});\n\nreturn out;\n"
+      },
+      "id": "cd07a8cf-e716-4d6b-9afc-869c1c9d83fd",
+      "name": "Build Write Payloads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6976,
+        2064
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/runs",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify([$json.run_row]) }}",
+        "options": {}
+      },
+      "id": "6a5ed5e9-1a05-4374-8d3b-0fe578ab7c96",
+      "name": "Create Run Row",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        7200,
+        2064
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/sales_leads",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($('Build Write Payloads').first().json.sales_rows) }}",
+        "options": {}
+      },
+      "id": "7ec60f70-34ad-4df5-b8b1-f57b9d0ad3c7",
+      "name": "Write Sales Facts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        7424,
+        2064
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/delivery_projects",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($('Build Write Payloads').first().json.delivery_rows) }}",
+        "options": {}
+      },
+      "id": "5d41b2a0-b84c-4308-958e-7dbc8f0f45c7",
+      "name": "Write Delivery Facts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        7648,
+        2064
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/people_records",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($('Build Write Payloads').first().json.people_rows) }}",
+        "options": {}
+      },
+      "id": "384fce47-5041-49ee-a9c2-5fc73903e3c4",
+      "name": "Write People Facts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        7856,
+        2064
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/data_quality_issues",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($('Build Write Payloads').first().json.issue_rows) }}",
+        "options": {}
+      },
+      "id": "3506758c-98d9-498d-9eeb-b1c88f1dd85b",
+      "name": "Write Quality Issues",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        8080,
+        2064
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/previous_run?select=run_id",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "id": "8f0c778c-b6ca-45e1-8204-90aeb7000710",
+      "name": "Fetch Previous Run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        8304,
+        2064
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/metrics?select=period_key,metric_key,group_key,metric_value&run_id=eq.{{ $('Fetch Previous Run').first().json.run_id || '00000000-0000-0000-0000-000000000000' }}&limit=4000",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "id": "626e70ea-89fc-440b-b5a3-815b17a3ed74",
+      "name": "Fetch Previous Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        8528,
+        2064
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shared helpers, prepended by build.js to every Code node that needs them.\n// Not an n8n node on its own -- it declares no items and returns nothing.\n//\n// Everything here follows one rule: a value that cannot be trusted becomes\n// null and is reported, never guessed at. parseDate does not \"do its best\"\n// with 2026-13-45; it returns null and the caller flags the record.\n\nconst PLACEHOLDERS = new Set([\n  '', '-', '--', 'n/a', 'na', 'none', 'null', 'nil', 'unknown', 'tbc', 'tbd', '#n/a',\n]);\n\n/** Trimmed string, or null for blanks and the placeholder words people type\n *  into spreadsheets when they mean \"I don't know\". */\nfunction norm(v) {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  return PLACEHOLDERS.has(s.toLowerCase()) ? null : s;\n}\n\n/** Strict date parse -> 'YYYY-MM-DD' or null.\n *  Accepts ISO (with or without a time part), D/M/Y and D-M-Y. Rejects\n *  impossible calendar dates by round-tripping the components: 2026-13-45\n *  and 31/02/2026 both come back null rather than silently rolling over into\n *  the next month, which is what `new Date()` would do. */\nfunction parseDate(v) {\n  const s = norm(v);\n  if (s === null) return null;\n\n  let y, m, d;\n  let match = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})(?:[T ].*)?$/);\n  if (match) {\n    [, y, m, d] = match;\n  } else {\n    match = s.match(/^(\\d{1,2})[/-](\\d{1,2})[/-](\\d{4})$/);\n    if (!match) return null;\n    [, d, m, y] = match;          // day-first; see SETUP.md if your source is US-order\n  }\n\n  y = Number(y); m = Number(m); d = Number(d);\n  if (m < 1 || m > 12 || d < 1 || d > 31) return null;\n\n  const probe = new Date(Date.UTC(y, m - 1, d));\n  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) {\n    return null;                  // 31 February and friends\n  }\n  return probe.toISOString().slice(0, 10);\n}\n\n/** Money -> number or null. Handles '$1,200', '1 200,50', '(450)' for negative,\n *  and a bare number that arrived as a JS number already. */\nfunction parseAmount(v) {\n  if (typeof v === 'number') return Number.isFinite(v) ? v : null;\n  const s = norm(v);\n  if (s === null) return null;\n\n  const negative = /^\\(.*\\)$/.test(s);\n  let t = s.replace(/[()]/g, '').replace(/[^\\d.,-]/g, '');\n  if (t === '' || t === '-') return null;\n\n  // Decide which separator is the decimal point by looking at the last one.\n  const lastComma = t.lastIndexOf(',');\n  const lastDot = t.lastIndexOf('.');\n  if (lastComma > lastDot) {\n    t = t.replace(/\\./g, '').replace(',', '.');\n  } else {\n    t = t.replace(/,/g, '');\n  }\n\n  const n = Number(t);\n  if (!Number.isFinite(n)) return null;\n  return negative ? -n : n;\n}\n\n/** Inclusive window test on two 'YYYY-MM-DD' strings. String comparison is\n *  correct for ISO dates and avoids dragging a timezone into it. */\nfunction inWindow(iso, start, end) {\n  return iso !== null && iso >= start && iso <= end;\n}\n\nfunction daysBetween(fromIso, toIso) {\n  if (!fromIso || !toIso) return null;\n  const ms = Date.parse(toIso + 'T00:00:00Z') - Date.parse(fromIso + 'T00:00:00Z');\n  return Math.round(ms / 86400000);\n}\n\n/** Division that refuses to invent a number. Returns null when the\n *  denominator is zero or missing -- an empty period must not read as 0%. */\nfunction ratio(numerator, denominator) {\n  if (denominator === null || denominator === undefined || Number(denominator) === 0) return null;\n  return Number(numerator) / Number(denominator);\n}\n\nfunction mean(values) {\n  const nums = values.filter((v) => typeof v === 'number' && Number.isFinite(v));\n  if (nums.length === 0) return null;\n  return nums.reduce((a, b) => a + b, 0) / nums.length;\n}\n\nfunction sum(values) {\n  return values.reduce((a, b) => a + (typeof b === 'number' && Number.isFinite(b) ? b : 0), 0);\n}\n\n/** One metric row, shaped for the metrics table. Used ~30 times in the engine,\n *  so it is worth the four lines. */\nfunction metric(domain, key, value, unit, denominator) {\n  return {\n    domain,\n    metric_key: key,\n    metric_value: (typeof value === 'number' && Number.isFinite(value)) ? value : null,\n    metric_text: typeof value === 'string' ? value : null,\n    unit,\n    denominator: denominator === undefined ? null : denominator,\n  };\n}\n\n\n// Node: \"Metric Engine\"  (Code, Run Once for All Items)\n// EVERY reporting period in one pass, each computed twice: once for the window,\n// once for the equal-length window immediately before it.\n//\n// There is no loop around this node. There never needed to be one: the whole\n// calculation is arithmetic over arrays already in memory, and computing four\n// windows costs microseconds. The loop existed to give Claude one period at a\n// time, and it made three model calls wait for each other -- about two thirds\n// of a run's wall clock. Claude now gets all of them in a single call.\n//\n// The prior window is what makes the guide's directional questions answerable.\n// \"Did win rate improve, decline, or stay stable?\" cannot be answered against\n// the last RUN: run twice in ten minutes and the two windows overlap by 99%, so\n// every metric is trivially identical and the only honest answer is \"no\n// movement\". Compared against the preceding window of the same length, the\n// question has a real answer.\n//\n// Pure arithmetic. No I/O, no clock, no randomness -- which is what lets\n// test/harness.js assert the whole thing against hand-computed values.\n//\n// The facts come from Assemble Facts BY NAME -- $input here is the output of\n// Fetch Previous Metrics, which is previous metric rows, not this run's records.\n\n// --- tunables -------------------------------------------------------------\n\nconst NEAR_BUDGET = 0.9;\n\n// --------------------------------------------------------------------------\n\nconst source = $('Assemble Facts').first().json;\n\nconst sales = source.facts.sales || [];\nconst delivery = source.facts.delivery || [];\nconst people = source.facts.people || [];\n\nconst salesCountable = sales.filter((r) => r.is_countable);\nconst deliveryCountable = delivery.filter((r) => r.is_countable);\nconst peopleCountable = people.filter((r) => r.is_countable);\n\nconst departments = source.expected_departments || [];\n\n// ==========================================================================\n// One window in, its metrics out. Called twice.\n// ==========================================================================\n\nfunction computeWindow(pStart, pEnd) {\n  const m = [];\n  const push = (domain, key, value, unit, denominator, group) => {\n    m.push({\n      domain,\n      metric_key: key,\n      group_key: group === undefined ? null : group,\n      metric_value: (typeof value === 'number' && Number.isFinite(value)) ? value : null,\n      metric_text: typeof value === 'string' ? value : null,\n      unit,\n      denominator: denominator === undefined ? null : denominator,\n    });\n  };\n\n  // ---------------------------------------------------------------- SALES\n\n  const inPeriod = salesCountable.filter((r) => inWindow(r.lead_date, pStart, pEnd));\n  const won = inPeriod.filter((r) => r.is_won === true);\n  const lost = inPeriod.filter((r) => r.is_lost === true);\n  const open = inPeriod.filter((r) => r.is_open === true);\n\n  const revenueWon = sum(won.map((r) => r.deal_amount));\n  const pipelineValue = sum(open.map((r) => r.deal_amount));\n  const closedTotal = won.length + lost.length;\n\n  // marketing_spend is a MONTHLY figure repeated on every lead row in that\n  // month. Summing the column multiplies the budget by the lead count, so cost\n  // per lead comes out wrong by exactly the factor it divides by. One value per\n  // month, pro-rated by the share of that month inside the window.\n  const spendByMonth = {};\n  for (const r of sales) {\n    if (r.lead_date === null || r.marketing_spend === null) continue;\n    const month = r.lead_date.slice(0, 7);\n    if (spendByMonth[month] === undefined) spendByMonth[month] = r.marketing_spend;\n    else if (spendByMonth[month] !== r.marketing_spend) {\n      spendByMonth[month] = Math.max(spendByMonth[month], r.marketing_spend);\n    }\n  }\n  const daysInMonth = (month) => {\n    const [y, mo] = month.split('-').map(Number);\n    return new Date(Date.UTC(y, mo, 0)).getUTCDate();\n  };\n  let marketingSpend = 0;\n  let monthsCovered = 0;\n  for (const [month, spend] of Object.entries(spendByMonth)) {\n    const mStart = month + '-01';\n    const mEnd = month + '-' + String(daysInMonth(month)).padStart(2, '0');\n    const oStart = mStart > pStart ? mStart : pStart;\n    const oEnd = mEnd < pEnd ? mEnd : pEnd;\n    if (oStart > oEnd) continue;\n    marketingSpend += spend * ((daysBetween(oStart, oEnd) + 1) / daysInMonth(month));\n    monthsCovered += 1;\n  }\n  marketingSpend = Math.round(marketingSpend * 100) / 100;\n\n  push('sales', 'total_leads', inPeriod.length, 'count');\n  push('sales', 'closed_won_deals', won.length, 'count');\n  push('sales', 'closed_lost_deals', lost.length, 'count');\n  push('sales', 'pipeline_value', pipelineValue, 'currency', open.length);\n  push('sales', 'revenue_won', revenueWon, 'currency', won.length);\n  push('sales', 'win_rate', ratio(won.length, closedTotal), 'percent', closedTotal);\n  push('sales', 'marketing_spend', marketingSpend, 'currency', monthsCovered);\n  push('sales', 'cost_per_lead', ratio(marketingSpend, inPeriod.length), 'currency', inPeriod.length);\n  // Revenue per unit of spend: the \"is marketing spend producing enough?\"\n  // question needs a ratio, not two numbers the reader has to divide.\n  push('sales', 'revenue_per_marketing_dollar', ratio(revenueWon, marketingSpend), 'ratio', marketingSpend);\n  push('sales', 'pipeline_per_marketing_dollar', ratio(pipelineValue, marketingSpend), 'ratio', marketingSpend);\n  push('sales', 'marketing_spend_method',\n    'One value per month, pro-rated by the share of each month inside the window.', 'text');\n\n  const revenueBySource = {};\n  for (const r of won) {\n    const k = r.lead_source || 'not recorded';\n    revenueBySource[k] = (revenueBySource[k] || 0) + (r.deal_amount || 0);\n  }\n  // A source with leads but no revenue reads 0, not absent: \"we did not measure\n  // it\" and \"it produced nothing\" are different findings.\n  for (const r of inPeriod) {\n    const k = r.lead_source || 'not recorded';\n    if (revenueBySource[k] === undefined) revenueBySource[k] = 0;\n  }\n  for (const [src, value] of Object.entries(revenueBySource)) {\n    push('sales', 'revenue_by_lead_source', value, 'currency',\n      inPeriod.filter((r) => (r.lead_source || 'not recorded') === src).length, src);\n  }\n\n  // ------------------------------------------------------------- DELIVERY\n\n  const overlaps = (p) =>\n    (p.kickoff_date === null || p.kickoff_date <= pEnd)\n    && (p.completed_date === null || p.completed_date >= pStart);\n\n  const active = deliveryCountable.filter(\n    (p) => (p.is_in_progress === true || p.is_blocked === true) && overlaps(p));\n  const blocked = deliveryCountable.filter((p) => p.is_blocked === true && overlaps(p));\n  const completed = deliveryCountable.filter((p) => inWindow(p.completed_date, pStart, pEnd));\n\n  const judgeable = completed.filter((p) => p.due_date !== null);\n  const onTime = judgeable.filter((p) => p.completed_date <= p.due_date);\n  const late = judgeable.filter((p) => p.completed_date > p.due_date);\n  const delays = late.map((p) => daysBetween(p.due_date, p.completed_date)).filter((n) => n !== null);\n\n  const costed = completed.filter((p) => p.budgeted_cost !== null && p.actual_cost !== null);\n  const variance = sum(costed.map((p) => p.actual_cost)) - sum(costed.map((p) => p.budgeted_cost));\n  const overBudget = costed.filter((p) => p.actual_cost > p.budgeted_cost);\n  const nearBudget = active.filter(\n    (p) => p.budgeted_cost > 0 && p.actual_cost !== null\n      && (p.actual_cost / p.budgeted_cost) >= NEAR_BUDGET);\n\n  push('delivery', 'active_projects', active.length, 'count');\n  push('delivery', 'completed_projects', completed.length, 'count');\n  push('delivery', 'blocked_projects', blocked.length, 'count', active.length);\n  push('delivery', 'blocked_share_of_active', ratio(blocked.length, active.length), 'percent', active.length);\n  push('delivery', 'on_time_completion_rate', ratio(onTime.length, judgeable.length), 'percent', judgeable.length);\n  push('delivery', 'average_delay', mean(delays), 'days', late.length);\n  push('delivery', 'budget_variance', costed.length ? variance : null, 'currency', costed.length);\n  push('delivery', 'over_budget_projects', overBudget.length, 'count', costed.length);\n  push('delivery', 'projects_near_budget', nearBudget.length, 'count', active.length);\n\n  const byTeam = {};\n  const byOwner = {};\n  for (const p of [...active, ...completed]) {\n    const t = p.team || 'not recorded';\n    byTeam[t] = (byTeam[t] || 0) + 1;\n    const o = p.owner || 'not recorded';\n    byOwner[o] = (byOwner[o] || 0) + 1;\n  }\n  for (const [t, n] of Object.entries(byTeam)) push('delivery', 'delivery_load_by_team', n, 'count', undefined, t);\n  // The KPI guide asks which teams OR OWNERS look overloaded. Answering half of\n  // a question is not answering it.\n  for (const [o, n] of Object.entries(byOwner)) push('delivery', 'delivery_load_by_owner', n, 'count', undefined, o);\n\n  const blockedByTeam = {};\n  for (const p of blocked) {\n    const t = p.team || 'not recorded';\n    blockedByTeam[t] = (blockedByTeam[t] || 0) + 1;\n  }\n  for (const [t, n] of Object.entries(blockedByTeam)) push('delivery', 'blocked_by_team', n, 'count', undefined, t);\n\n  // --------------------------------------------------------------- PEOPLE\n\n  const activeOn = (iso) => peopleCountable.filter(\n    (r) => r.start_date !== null && r.start_date <= iso\n      && (r.exit_date === null || r.exit_date > iso));\n\n  const headcountStart = activeOn(pStart).length;\n  const activeAtEnd = activeOn(pEnd);\n  const headcountEnd = activeAtEnd.length;\n\n  const applications = peopleCountable.filter((r) => inWindow(r.application_date, pStart, pEnd));\n  const offers = peopleCountable.filter((r) => inWindow(r.offer_accepted_date, pStart, pEnd));\n  const hires = peopleCountable.filter((r) => inWindow(r.start_date, pStart, pEnd));\n  const exits = peopleCountable.filter((r) => inWindow(r.exit_date, pStart, pEnd));\n\n  const ttl = hires.map((r) => daysBetween(r.application_date, r.start_date))\n    .filter((n) => n !== null && n >= 0);\n  const accept = offers.map((r) => daysBetween(r.application_date, r.offer_accepted_date))\n    .filter((n) => n !== null && n >= 0);\n\n  push('people', 'applications', applications.length, 'count');\n  push('people', 'offers_accepted', offers.length, 'count');\n  push('people', 'new_hires', hires.length, 'count');\n  push('people', 'exits', exits.length, 'count');\n  push('people', 'active_headcount', headcountEnd, 'count');\n  push('people', 'active_headcount_start', headcountStart, 'count');\n  push('people', 'net_headcount_change', headcountEnd - headcountStart, 'count');\n  push('people', 'time_to_hire', mean(ttl), 'days', ttl.length);\n  push('people', 'offer_acceptance_time', mean(accept), 'days', accept.length);\n  // The guide's definition: exits over headcount at the START of the window,\n  // not annualised. A rate the guide defines is not one to reinterpret.\n  push('people', 'attrition_rate', ratio(exits.length, headcountStart), 'percent', headcountStart);\n\n  const hcByDept = {};\n  const exitsByDept = {};\n  for (const d of departments) { hcByDept[d] = 0; exitsByDept[d] = 0; }\n  for (const r of activeAtEnd) {\n    const d = r.department || 'not recorded';\n    hcByDept[d] = (hcByDept[d] || 0) + 1;\n  }\n  for (const r of exits) {\n    const d = r.department || 'not recorded';\n    exitsByDept[d] = (exitsByDept[d] || 0) + 1;\n  }\n  for (const [d, n] of Object.entries(hcByDept)) push('people', 'headcount_by_department', n, 'count', undefined, d);\n  for (const [d, n] of Object.entries(exitsByDept)) push('people', 'exits_by_department', n, 'count', undefined, d);\n\n  // Departments with no activity in THIS window, computed per window because a\n  // department can be quiet for 30 days and busy year to date.\n  const touched = (r) =>\n    inWindow(r.application_date, pStart, pEnd) || inWindow(r.offer_accepted_date, pStart, pEnd)\n    || inWindow(r.start_date, pStart, pEnd) || inWindow(r.exit_date, pStart, pEnd);\n  const seen = new Set();\n  for (const r of peopleCountable) {\n    if (r.department && (touched(r) || activeAtEnd.includes(r))) seen.add(r.department);\n  }\n  const noData = departments.filter((d) => !seen.has(d));\n\n  return { metrics: m, departments_with_no_data: noData };\n}\n\n// ==========================================================================\n// Every period, plus the equal-length window immediately before each\n// ==========================================================================\n\nconst shiftDays = (iso, n) => {\n  const d = new Date(iso + 'T00:00:00Z');\n  d.setUTCDate(d.getUTCDate() + n);\n  return d.toISOString().slice(0, 10);\n};\n\nconst keyOf = (r) => r.metric_key + '|' + (r.group_key === null ? '' : r.group_key);\n\n// --- data quality: about the fetch, so it is computed once -----------------\n\nconst issuesBySource = { sales: {}, delivery: {}, people: {} };\nfor (const issue of source.issues || []) {\n  const bucket = issuesBySource[issue.source] || (issuesBySource[issue.source] = {});\n  bucket[issue.issue_type] = (bucket[issue.issue_type] || 0) + 1;\n}\n\nconst skipped = {\n  sales: sales.filter((r) => !r.is_countable).length,\n  delivery: delivery.filter((r) => !r.is_countable).length,\n  people: people.filter((r) => !r.is_countable).length,\n};\n\n// --------------------------------------------------------------------------\n\nconst allRows = [];\nconst periodSummaries = [];\n\nfor (const period of source.periods) {\n  const pStart = period.start;\n  const pEnd = period.end;\n  const periodDays = Math.max(1, daysBetween(pStart, pEnd) + 1);\n\n  const priorEnd = shiftDays(pStart, -1);\n  const priorStart = shiftDays(priorEnd, -(periodDays - 1));\n\n  const current = computeWindow(pStart, pEnd);\n  const prior = computeWindow(priorStart, priorEnd);\n\n  const priorByKey = {};\n  for (const r of prior.metrics) priorByKey[keyOf(r)] = r.metric_value;\n\n  // Quality rows are emitted per period because departments_with_no_data is a\n  // property of the window: a department can be quiet for 30 days and busy year\n  // to date.\n  const quality = [];\n  const qpush = (key, value, group) => quality.push({\n    domain: 'quality', metric_key: key, group_key: group === undefined ? null : group,\n    metric_value: typeof value === 'number' ? value : null,\n    metric_text: typeof value === 'string' ? value : null,\n    unit: 'count', denominator: null,\n  });\n\n  qpush('records_fetched', source.totals.fetched);\n  qpush('records_kept', source.totals.kept);\n  qpush('records_excluded', source.totals.excluded);\n  for (const [src, n] of Object.entries(skipped)) qpush('records_skipped', n, src);\n  for (const [src, types] of Object.entries(issuesBySource)) {\n    for (const [type, n] of Object.entries(types)) qpush(`issue_${type}`, n, src);\n  }\n  for (const d of current.departments_with_no_data) {\n    qpush(`no_data_${String(d).toLowerCase().replace(/[^a-z0-9]+/g, '_')}`, 1);\n  }\n\n  const rows = [...current.metrics, ...quality].map((row) => ({\n    run_id: source.run_id,\n    period_key: period.key,\n    period_label: period.label,\n    period_start: pStart,\n    period_end: pEnd,\n    prior_start: priorStart,\n    prior_end: priorEnd,\n    prior_value: row.domain === 'quality' ? null : (priorByKey[keyOf(row)] ?? null),\n    ...row,\n  }));\n\n  for (const r of rows) allRows.push(r);\n\n  periodSummaries.push({\n    period_key: period.key,\n    period_label: period.label,\n    period_start: pStart,\n    period_end: pEnd,\n    period_days: periodDays,\n    prior_start: priorStart,\n    prior_end: priorEnd,\n    metrics: rows,\n    departments_with_no_data: current.departments_with_no_data,\n  });\n}\n\nconst out = [];\n\nout.push({\n  json: {\n    run_id: source.run_id,\n    as_of: source.as_of,\n    period_keys: source.periods.map((p) => p.key),\n    // Every metric row for every period, in one array: one batched write, not\n    // one per period.\n    metrics: allRows,\n    periods: periodSummaries,\n    quality: {\n      records_fetched: source.totals.fetched,\n      records_kept: source.totals.kept,\n      records_excluded: source.totals.excluded,\n      records_skipped: skipped,\n      issues_by_source: issuesBySource,\n      sources_failed: source.sources_failed || [],\n    },\n  },\n});\n\nreturn out;\n"
+      },
+      "id": "bac2ee08-f63c-4f1d-a62d-ec5bdc82b035",
+      "name": "Metric Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8736,
+        2064
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Prepare Claude Input\"  (Code, Run Once for All Items)\n// Turns EVERY period's metrics into a single prompt, and publishes the list of\n// metric keys that Grounding Check will hold the answer to.\n//\n// One call, not one per period. The rules, the twelve questions and the data\n// quality block are identical across periods and were previously sent three\n// times over; only the metric blocks differ. Collapsing them removes two thirds\n// of a run's wall clock.\n//\n// The cost, stated plainly: one call analysing three windows gives each less\n// attention than a dedicated call does, and a failure now loses every period\n// instead of one. The Claude node is set to retry for that reason, and Grounding\n// Check writes a failed row per period so the dashboard degrades rather than\n// going blank.\n//\n// The request is built HERE, not typed into the LLM node's parameter, so it can\n// be diffed and unit-tested.\n//\n// What crosses into the model: computed metrics and a data quality summary.\n// What does not: a single source record. That boundary is the whole design.\n\n// --- what the executive summary must answer -------------------------------\n//\n// Straight from the KPI guide. Listing them as \"questions your analysis should\n// be able to answer\" was not enough: the model spread the answers across risks,\n// actions and warnings, and the summary ended up describing whichever metrics\n// moved rather than answering what leadership asked. They are a contract now.\n\nconst SUMMARY_QUESTIONS = [\n  'SALES',\n  '  S1. Which lead sources produced the strongest revenue?',\n  '  S2. Did win rate improve, decline, or stay roughly stable for this period?',\n  '  S3. Is marketing spend producing enough pipeline or revenue?',\n  '  S4. Are any records missing fields that affect sales calculations?',\n  'PROJECT DELIVERY',\n  '  D1. Which teams or owners appear overloaded?',\n  '  D2. Are blocked projects increasing?',\n  '  D3. Are projects finishing late or going over budget?',\n  '  D4. Which delivery issue should the team address first?',\n  'PEOPLE OPS',\n  '  P1. Is hiring volume enough to support business activity?',\n  '  P2. Are exits concentrated in any department?',\n  '  P3. Is time to hire increasing or decreasing?',\n  '  P4. Which People Ops data issues reduce confidence in the report?',\n];\n\nconst RULES = [\n  'You are an operations analyst writing for the leadership team of Koya Talent. Three teams report here: Sales, Project Delivery, and People Ops.',\n  '',\n  'You are given the calculated metrics for ONE reporting period and a data quality summary. Return an executive summary, operational risks or anomalies, recommended actions, and data quality warnings.',\n  '',\n  'THE EXECUTIVE SUMMARY IS A CONTRACT. It must answer all twelve questions below, in three short paragraphs -- one per department, in this order -- each opening with the department name in bold. Answer every question in its department\\'s paragraph. Where a metric needed for an answer is absent or null, say that the question cannot be answered and why, rather than skipping it silently or substituting a different observation.',\n  '',\n  ...SUMMARY_QUESTIONS,\n  '',\n  'Rules, all binding:',\n  '1. Use ONLY the metrics below. Every item in risks_and_anomalies and recommended_actions must cite the metric keys it rests on in its \"metric_keys\" field, and every key must appear in the ALLOWED list. A statement you cannot cite is a statement you must not make.',\n  '2. Never estimate, extrapolate or invent a number you were not given. If something you want to say needs a metric that is absent, say it cannot be assessed.',\n  '3. A metric shown as null was not computable, usually because its denominator was zero. Null is not zero. \"No deals closed, so win rate cannot be computed\" is right; \"win rate fell to 0%\" is not.',\n  '4. Read the denominator before judging a rate. A 50% win rate over 4 closed deals is noise; over 400 it is a finding. Say which you are looking at.',\n  '5. DIRECTION comes from \"prior\", which is the same metric over the equal-length window immediately BEFORE this one. That is the only comparison that answers S2, D2 and P3. Where prior is absent, say the direction cannot be established. Do not describe direction from a single observation.',\n  '6. issues_by_source is already grouped by source. Attribute every issue to the source it is listed under and never to another. A flagged field is not the same thing as a skipped record: a record is skipped only when a missing field prevents it being counted at all, so the issue count is normally higher than records_skipped. Do not equate the two.',\n  '7. If a department appears in departments_with_no_data, or a source in sources_failed, report it as a reporting gap and do NOT characterise that department\\'s performance.',\n  '8. If records_excluded is more than 10% of records_fetched, say in the executive summary that the figures are provisional.',\n  '9. If there is nothing materially wrong, set no_material_issues to true and say so plainly. Do NOT pad risks or actions to look thorough. An empty risks list with a complete summary is a valid and useful answer. The executive summary must still answer all twelve questions.',\n  '10. Be specific and short. No preamble, no restating the brief, no hedging that carries no information.',\n  '',\n  'Severity: \"high\" needs a decision this week, \"medium\" needs watching, \"low\" is worth knowing. Action priority uses the same scale.',\n];\n\nconst DOMAIN_LABEL = {\n  sales: 'SALES',\n  delivery: 'PROJECT DELIVERY',\n  people: 'PEOPLE OPS',\n  quality: 'DATA QUALITY',\n};\n\n// --------------------------------------------------------------------------\n\nconst engine = $input.first().json;\n\n// The previous RUN's values, used for exactly one thing per period: telling the\n// model when this run repeats the last byte for byte, which usually means the\n// sources have not moved rather than that the business has gone quiet.\n// Direction of travel comes from `prior`, never from this.\nconst previousByKey = {};\ntry {\n  for (const item of $('Fetch Previous Metrics').all()) {\n    const p = item.json || {};\n    if (p.metric_key) {\n      previousByKey[p.period_key + '|' + p.metric_key + '|' + (p.group_key || '')] = p.metric_value;\n    }\n  }\n} catch (e) { /* first run: nothing to compare, and that is not an error */ }\n\nconst keyOf = (r) => r.metric_key + '|' + (r.group_key === null ? '' : r.group_key);\n\nconst allowedKeys = [];\nconst periodBlocks = [];\nconst periodKeys = [];\n\nfor (const period of engine.periods) {\n  periodKeys.push(period.period_key);\n\n  const lines = { sales: [], delivery: [], people: [] };\n  const grouped = {};\n  let comparable = 0;\n  let identical = 0;\n\n  for (const row of period.metrics) {\n    if (!allowedKeys.includes(row.metric_key)) allowedKeys.push(row.metric_key);\n\n    if (row.domain !== 'quality') {\n      const prev = previousByKey[period.period_key + '|' + keyOf(row)];\n      if (prev !== undefined) {\n        comparable += 1;\n        if (Number(prev) === Number(row.metric_value)) identical += 1;\n      }\n    }\n\n    if (row.domain === 'quality') continue;\n\n    if (row.group_key) {\n      const k = row.domain + '|' + row.metric_key;\n      (grouped[k] || (grouped[k] = [])).push(row);\n      continue;\n    }\n\n    const value = row.metric_value === null\n      ? (row.metric_text === null ? 'null (not computable)' : row.metric_text)\n      : String(Math.round(row.metric_value * 1000) / 1000);\n\n    const bits = [`${row.metric_key} = ${value}`];\n    if (row.unit && row.unit !== 'text') bits.push(`unit=${row.unit}`);\n    if (row.denominator !== null && row.denominator !== undefined) bits.push(`over=${row.denominator}`);\n    if (row.prior_value !== null && row.prior_value !== undefined) {\n      bits.push(`prior=${Math.round(row.prior_value * 1000) / 1000}`);\n    }\n    lines[row.domain].push('  ' + bits.join(', '));\n  }\n\n  // Breakdowns render on one line each, largest first, so \"which lead source was\n  // strongest\" and \"which owner is overloaded\" are answerable by reading.\n  for (const [composite, rowsIn] of Object.entries(grouped)) {\n    const [domain, key] = composite.split('|');\n    const parts = rowsIn\n      .slice()\n      .sort((a, b) => (b.metric_value || 0) - (a.metric_value || 0))\n      .map((r) => {\n        const v = r.metric_value === null ? 'null' : r.metric_value;\n        return (r.prior_value !== null && r.prior_value !== undefined)\n          ? `${r.group_key}=${v} (prior ${r.prior_value})`\n          : `${r.group_key}=${v}`;\n      });\n    lines[domain].push(`  ${key}: ${parts.join(', ')}`);\n  }\n\n  const identicalToPreviousRun = comparable > 0 && identical === comparable;\n\n  const block = [\n    '=========================================================================',\n    `PERIOD \"${period.period_key}\" — ${period.period_label} (${period.period_start} to ${period.period_end}, ${period.period_days} days)`,\n    `  prior window for direction: ${period.prior_start} to ${period.prior_end}`,\n    `  departments with no data this window: ${JSON.stringify(period.departments_with_no_data)}`,\n    identicalToPreviousRun\n      ? '  NOTE: every metric here is identical to the last completed run of this same period. That usually means the sources have not changed, not that the business was flat. Mention it once as a reporting caveat, never as a performance finding.'\n      : '',\n    '',\n  ].filter((x) => x !== '');\n\n  for (const domain of ['sales', 'delivery', 'people']) {\n    block.push(`${DOMAIN_LABEL[domain]} METRICS:`);\n    block.push(lines[domain].length ? lines[domain].join('\\n') : '  (none computed)');\n    block.push('');\n  }\n\n  periodBlocks.push(block.join('\\n'));\n}\n\nconst q = engine.quality;\nconst excludedShare = q.records_fetched > 0\n  ? Math.round((q.records_excluded / q.records_fetched) * 1000) / 10\n  : 0;\n\nconst qualityBlock = [\n  `  records_fetched = ${q.records_fetched}`,\n  `  records_kept = ${q.records_kept}`,\n  `  records_excluded = ${q.records_excluded} (${excludedShare}% of fetched)`,\n  `  records_skipped_per_source = ${JSON.stringify(q.records_skipped)}`,\n  `  issues_by_source = ${JSON.stringify(q.issues_by_source)}`,\n  `  sources_failed = ${JSON.stringify(q.sources_failed)}`,\n];\n\nconst prompt = [\n  RULES.join('\\n'),\n  '',\n  `Reference date for the whole report is ${engine.as_of}.`,\n  '',\n  `You are analysing ${periodKeys.length} reporting periods in one pass: ${periodKeys.join(', ')}.`,\n  'Return ONE object per period, in the \"periods\" array, with its \"period_key\" set exactly as spelled above. Analyse each period on its own metrics; do not carry a finding from one window into another, and do not describe them as a group. A metric can be unremarkable over a year and alarming over thirty days.',\n  '',\n  'DATA QUALITY (one report, covering the whole fetch, so it applies to every period):',\n  qualityBlock.join('\\n'),\n  '',\n  periodBlocks.join('\\n'),\n  '=========================================================================',\n  `ALLOWED metric_keys (cite only from this list, exactly as spelled): ${allowedKeys.join(', ')}`,\n].join('\\n');\n\nconst out = [];\n\nout.push({\n  json: {\n    run_id: engine.run_id,\n    period_keys: periodKeys,\n    allowed_metric_keys: allowedKeys,\n    prompt,\n  },\n});\n\nreturn out;\n"
+      },
+      "id": "c9fb5b1f-5664-4789-99ae-d9373153f6e6",
+      "name": "Prepare Claude Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8960,
+        2064
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "hasOutputParser": true
+      },
+      "id": "dfe66812-d563-41b3-8426-aff4be708893",
+      "name": "Claude Insight",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.6,
+      "position": [
+        9184,
+        2064
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "model": "=claude-sonnet-4-6",
+        "options": {
+          "maxTokensToSample": 16384
+        }
+      },
+      "id": "b8f47817-548f-4c99-9d0c-30ae273dfbbc",
+      "name": "Anthropic Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.2,
+      "position": [
+        9120,
+        2304
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "cZnySN9dZ7OxZ8W8",
+          "name": "Anthropic api key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"required\": [\n    \"periods\"\n  ],\n  \"additionalProperties\": false,\n  \"properties\": {\n    \"periods\": {\n      \"type\": \"array\",\n      \"minItems\": 1,\n      \"maxItems\": 6,\n      \"items\": {\n        \"type\": \"object\",\n        \"required\": [\n          \"period_key\",\n          \"executive_summary\",\n          \"risks_and_anomalies\",\n          \"recommended_actions\",\n          \"data_quality_warnings\",\n          \"no_material_issues\",\n          \"confidence\"\n        ],\n        \"additionalProperties\": false,\n        \"properties\": {\n          \"period_key\": {\n            \"type\": \"string\",\n            \"description\": \"Exactly as spelled in the prompt.\"\n          },\n          \"executive_summary\": {\n            \"type\": \"string\",\n            \"description\": \"Three paragraphs, one per department in the order Sales, Project Delivery, People Ops, each opening with the department name in bold and each AT MOST 70 WORDS. Each must answer that department's four questions from the prompt. Where a metric needed for an answer is absent or null, say the question cannot be answered and why, rather than skipping it or substituting a different observation. Brevity is a requirement, not a style preference: one response carries every period, and an overlong one is truncated mid-JSON and parses as nothing at all.\"\n          },\n          \"risks_and_anomalies\": {\n            \"type\": \"array\",\n            \"minItems\": 0,\n            \"maxItems\": 4,\n            \"items\": {\n              \"type\": \"object\",\n              \"required\": [\n                \"statement\",\n                \"metric_keys\",\n                \"severity\",\n                \"department\",\n                \"kind\"\n              ],\n              \"additionalProperties\": false,\n              \"properties\": {\n                \"statement\": {\n                  \"type\": \"string\"\n                },\n                \"metric_keys\": {\n                  \"type\": \"array\",\n                  \"items\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"severity\": {\n                  \"type\": \"string\",\n                  \"enum\": [\n                    \"high\",\n                    \"medium\",\n                    \"low\"\n                  ]\n                },\n                \"department\": {\n                  \"type\": \"string\",\n                  \"enum\": [\n                    \"sales\",\n                    \"delivery\",\n                    \"people\",\n                    \"cross\"\n                  ]\n                },\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"enum\": [\n                    \"risk\",\n                    \"anomaly\"\n                  ]\n                }\n              }\n            }\n          },\n          \"recommended_actions\": {\n            \"type\": \"array\",\n            \"minItems\": 0,\n            \"maxItems\": 4,\n            \"items\": {\n              \"type\": \"object\",\n              \"required\": [\n                \"action\",\n                \"owner\",\n                \"priority\",\n                \"rationale\",\n                \"metric_keys\"\n              ],\n              \"additionalProperties\": false,\n              \"properties\": {\n                \"action\": {\n                  \"type\": \"string\",\n                  \"description\": \"A concrete next step a manager could take.\"\n                },\n                \"owner\": {\n                  \"type\": \"string\"\n                },\n                \"priority\": {\n                  \"type\": \"string\",\n                  \"enum\": [\n                    \"high\",\n                    \"medium\",\n                    \"low\"\n                  ]\n                },\n                \"rationale\": {\n                  \"type\": \"string\"\n                },\n                \"metric_keys\": {\n                  \"type\": \"array\",\n                  \"items\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            }\n          },\n          \"data_quality_warnings\": {\n            \"type\": \"array\",\n            \"minItems\": 0,\n            \"maxItems\": 5,\n            \"items\": {\n              \"type\": \"string\"\n            }\n          },\n          \"no_material_issues\": {\n            \"type\": \"boolean\",\n            \"description\": \"True when nothing in this period warrants a risk or an action.\"\n          },\n          \"confidence\": {\n            \"type\": \"string\",\n            \"enum\": [\n              \"high\",\n              \"medium\",\n              \"low\"\n            ]\n          }\n        }\n      }\n    }\n  }\n}"
+      },
+      "id": "199c1e4a-8f9e-495d-9613-52fedf982fdd",
+      "name": "Insight Schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        9344,
+        2304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shared helpers, prepended by build.js to every Code node that needs them.\n// Not an n8n node on its own -- it declares no items and returns nothing.\n//\n// Everything here follows one rule: a value that cannot be trusted becomes\n// null and is reported, never guessed at. parseDate does not \"do its best\"\n// with 2026-13-45; it returns null and the caller flags the record.\n\nconst PLACEHOLDERS = new Set([\n  '', '-', '--', 'n/a', 'na', 'none', 'null', 'nil', 'unknown', 'tbc', 'tbd', '#n/a',\n]);\n\n/** Trimmed string, or null for blanks and the placeholder words people type\n *  into spreadsheets when they mean \"I don't know\". */\nfunction norm(v) {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  return PLACEHOLDERS.has(s.toLowerCase()) ? null : s;\n}\n\n/** Strict date parse -> 'YYYY-MM-DD' or null.\n *  Accepts ISO (with or without a time part), D/M/Y and D-M-Y. Rejects\n *  impossible calendar dates by round-tripping the components: 2026-13-45\n *  and 31/02/2026 both come back null rather than silently rolling over into\n *  the next month, which is what `new Date()` would do. */\nfunction parseDate(v) {\n  const s = norm(v);\n  if (s === null) return null;\n\n  let y, m, d;\n  let match = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})(?:[T ].*)?$/);\n  if (match) {\n    [, y, m, d] = match;\n  } else {\n    match = s.match(/^(\\d{1,2})[/-](\\d{1,2})[/-](\\d{4})$/);\n    if (!match) return null;\n    [, d, m, y] = match;          // day-first; see SETUP.md if your source is US-order\n  }\n\n  y = Number(y); m = Number(m); d = Number(d);\n  if (m < 1 || m > 12 || d < 1 || d > 31) return null;\n\n  const probe = new Date(Date.UTC(y, m - 1, d));\n  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) {\n    return null;                  // 31 February and friends\n  }\n  return probe.toISOString().slice(0, 10);\n}\n\n/** Money -> number or null. Handles '$1,200', '1 200,50', '(450)' for negative,\n *  and a bare number that arrived as a JS number already. */\nfunction parseAmount(v) {\n  if (typeof v === 'number') return Number.isFinite(v) ? v : null;\n  const s = norm(v);\n  if (s === null) return null;\n\n  const negative = /^\\(.*\\)$/.test(s);\n  let t = s.replace(/[()]/g, '').replace(/[^\\d.,-]/g, '');\n  if (t === '' || t === '-') return null;\n\n  // Decide which separator is the decimal point by looking at the last one.\n  const lastComma = t.lastIndexOf(',');\n  const lastDot = t.lastIndexOf('.');\n  if (lastComma > lastDot) {\n    t = t.replace(/\\./g, '').replace(',', '.');\n  } else {\n    t = t.replace(/,/g, '');\n  }\n\n  const n = Number(t);\n  if (!Number.isFinite(n)) return null;\n  return negative ? -n : n;\n}\n\n/** Inclusive window test on two 'YYYY-MM-DD' strings. String comparison is\n *  correct for ISO dates and avoids dragging a timezone into it. */\nfunction inWindow(iso, start, end) {\n  return iso !== null && iso >= start && iso <= end;\n}\n\nfunction daysBetween(fromIso, toIso) {\n  if (!fromIso || !toIso) return null;\n  const ms = Date.parse(toIso + 'T00:00:00Z') - Date.parse(fromIso + 'T00:00:00Z');\n  return Math.round(ms / 86400000);\n}\n\n/** Division that refuses to invent a number. Returns null when the\n *  denominator is zero or missing -- an empty period must not read as 0%. */\nfunction ratio(numerator, denominator) {\n  if (denominator === null || denominator === undefined || Number(denominator) === 0) return null;\n  return Number(numerator) / Number(denominator);\n}\n\nfunction mean(values) {\n  const nums = values.filter((v) => typeof v === 'number' && Number.isFinite(v));\n  if (nums.length === 0) return null;\n  return nums.reduce((a, b) => a + b, 0) / nums.length;\n}\n\nfunction sum(values) {\n  return values.reduce((a, b) => a + (typeof b === 'number' && Number.isFinite(b) ? b : 0), 0);\n}\n\n/** One metric row, shaped for the metrics table. Used ~30 times in the engine,\n *  so it is worth the four lines. */\nfunction metric(domain, key, value, unit, denominator) {\n  return {\n    domain,\n    metric_key: key,\n    metric_value: (typeof value === 'number' && Number.isFinite(value)) ? value : null,\n    metric_text: typeof value === 'string' ? value : null,\n    unit,\n    denominator: denominator === undefined ? null : denominator,\n  };\n}\n\n\n// Node: \"Grounding Check\"  (Code, Run Once for All Items)\n// Holds Claude's answer to the metrics it was actually given, for every period.\n//\n// One call now covers all periods, so this node takes one response and emits one\n// insight row per period. Every item in every period must cite metric_keys drawn\n// from the list supplied in the prompt; anything citing an unknown key, or\n// citing nothing, is moved to ungrounded_claims and kept OUT of the report body.\n// That converts \"the insights are grounded\" from a claim in a document into a\n// number in a column.\n//\n// The LLM Chain node REPLACES json with its own output, so the allowed key list\n// and the expected period list are recovered from Prepare Claude Input by name.\n\nconst ARRAY_FIELDS = ['risks_and_anomalies', 'recommended_actions'];\nconst SEVERITIES = ['high', 'medium', 'low'];\n\n// Must match the model on the Anthropic Chat Model node. build.js asserts that\n// these two agree, so they cannot drift apart silently.\nconst MODEL = 'claude-sonnet-5';\n\nconst context = $('Prepare Claude Input').first().json;\nconst allowed = new Set(context.allowed_metric_keys || []);\nconst expected = context.period_keys || [];\n\nconst raw = ($input.first() && $input.first().json) || {};\nconst answer = (raw.output && typeof raw.output === 'object') ? raw.output : raw;\n\n// A whole-call failure. With one call covering every period, this loses all of\n// them at once -- which is the price of the collapse. The node retries first,\n// and every period still gets a row, so the dashboard degrades to \"the insight\n// step failed here\" rather than going blank.\nfunction failedRow(periodKey, message) {\n  return {\n    json: {\n      run_id: context.run_id,\n      period_key: periodKey,\n      status: 'insight_failed',\n      error_note: message,\n      executive_summary: null,\n      risks_and_anomalies: [],\n      recommended_actions: [],\n      data_quality_warnings: [],\n      no_material_issues: null,\n      ungrounded_claims: [],\n      grounded_count: 0,\n      ungrounded_count: 0,\n      confidence: null,\n      model: MODEL,\n    },\n  };\n}\n\nconst out = [];\n\nconst periodsBack = Array.isArray(answer.periods) ? answer.periods : null;\n\nif (raw.error || !periodsBack) {\n  const rawError = raw.error;\n  const message = typeof rawError === 'string'\n    ? rawError\n    : (rawError && rawError.message) || 'Model returned no periods array.';\n  for (const key of expected) out.push(failedRow(key, message));\n  return out;\n}\n\nconst byKey = {};\nfor (const p of periodsBack) {\n  if (p && p.period_key) byKey[p.period_key] = p;\n}\n\nfor (const periodKey of expected) {\n  const answerFor = byKey[periodKey];\n\n  // The model returned some periods but not this one. That is this period's\n  // failure, not the whole run's.\n  if (!answerFor || !answerFor.executive_summary) {\n    out.push(failedRow(periodKey, `The response contained no analysis for \"${periodKey}\".`));\n    continue;\n  }\n\n  const clean = {};\n  const ungrounded = [];\n  let groundedCount = 0;\n\n  for (const field of ARRAY_FIELDS) {\n    const items = Array.isArray(answerFor[field]) ? answerFor[field] : [];\n    const kept = [];\n\n    for (const it of items) {\n      const cited = Array.isArray(it.metric_keys) ? it.metric_keys : [];\n      const unknown = cited.filter((k) => !allowed.has(k));\n\n      if (cited.length === 0) {\n        ungrounded.push({ field, item: it, reason: 'cites no metric at all' });\n        continue;\n      }\n      if (unknown.length > 0) {\n        ungrounded.push({ field, item: it, reason: `cites unknown metric(s): ${unknown.join(', ')}` });\n        continue;\n      }\n\n      // Normalise the enums rather than trust free text to be one of three\n      // words -- the dashboard sorts on these.\n      if (field === 'risks_and_anomalies' && !SEVERITIES.includes(it.severity)) it.severity = 'low';\n      if (field === 'recommended_actions' && !SEVERITIES.includes(it.priority)) it.priority = 'low';\n\n      kept.push(it);\n      groundedCount += 1;\n    }\n\n    clean[field] = kept;\n  }\n\n  // Data quality warnings are about the pipeline, not about a metric, so they\n  // are not required to cite one and are never withheld.\n  const warnings = Array.isArray(answerFor.data_quality_warnings)\n    ? answerFor.data_quality_warnings : [];\n\n  // Trust the model's all-clear flag, but do not let it claim nothing is wrong\n  // while also reporting a high-severity risk.\n  const declaredClear = answerFor.no_material_issues === true;\n  const hasHighRisk = clean.risks_and_anomalies.some((r) => r.severity === 'high');\n\n  out.push({\n    json: {\n      run_id: context.run_id,\n      period_key: periodKey,\n      status: 'ok',\n      error_note: null,\n      executive_summary: norm(answerFor.executive_summary),\n      risks_and_anomalies: clean.risks_and_anomalies,\n      recommended_actions: clean.recommended_actions,\n      data_quality_warnings: warnings,\n      no_material_issues: declaredClear && !hasHighRisk,\n      ungrounded_claims: ungrounded,\n      grounded_count: groundedCount,\n      ungrounded_count: ungrounded.length,\n      confidence: norm(answerFor.confidence),\n      model: MODEL,\n    },\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "c33ec42c-0abe-480c-a8d1-bd2abf1d96fc",
+      "name": "Grounding Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9472,
+        2064
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/metrics",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($('Metric Engine').first().json.metrics) }}",
+        "options": {}
+      },
+      "id": "84bf8b6a-1d03-4aae-a6e4-cf6defeffd90",
+      "name": "Write Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        9616,
+        2064
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/insights",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($('Grounding Check').all().map(i => i.json)) }}",
+        "options": {}
+      },
+      "id": "d7ed2cb4-80b7-49de-8c1e-495dc8473bbf",
+      "name": "Write Insights",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        9840,
+        2064
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('Run Config').first().json.supabase_url }}/rest/v1/runs?run_id=eq.{{ $('Run Config').first().json.run_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ status: \"complete\", finished_at: new Date().toISOString() }) }}",
+        "options": {}
+      },
+      "id": "a5fd69b7-a836-465e-b7a3-572f74f3db93",
+      "name": "Complete Run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        10064,
+        2064
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "enOHUtTWdZ6YBsOF",
+          "name": "Supabase DB 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Run Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Run Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Run Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Config": {
+      "main": [
+        [
+          {
+            "node": "Get Sales Rows",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Delivery Records",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get People Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Sales Rows": {
+      "main": [
+        [
+          {
+            "node": "Normalise Sales",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Delivery Records": {
+      "main": [
+        [
+          {
+            "node": "Normalise Delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get People Records": {
+      "main": [
+        [
+          {
+            "node": "Normalise People",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise Sales": {
+      "main": [
+        [
+          {
+            "node": "Merge Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise Delivery": {
+      "main": [
+        [
+          {
+            "node": "Merge Sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Normalise People": {
+      "main": [
+        [
+          {
+            "node": "Merge Sources",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge Sources": {
+      "main": [
+        [
+          {
+            "node": "Assemble Facts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Facts": {
+      "main": [
+        [
+          {
+            "node": "Source Fingerprint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Source Fingerprint": {
+      "main": [
+        [
+          {
+            "node": "Check Fingerprint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Fingerprint": {
+      "main": [
+        [
+          {
+            "node": "Decide Skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide Skip": {
+      "main": [
+        [
+          {
+            "node": "Sources Unchanged?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sources Unchanged?": {
+      "main": [
+        [
+          {
+            "node": "Skipped - Sources Unchanged",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Write Payloads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Write Payloads": {
+      "main": [
+        [
+          {
+            "node": "Create Run Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Run Row": {
+      "main": [
+        [
+          {
+            "node": "Write Sales Facts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Sales Facts": {
+      "main": [
+        [
+          {
+            "node": "Write Delivery Facts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Delivery Facts": {
+      "main": [
+        [
+          {
+            "node": "Write People Facts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write People Facts": {
+      "main": [
+        [
+          {
+            "node": "Write Quality Issues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Quality Issues": {
+      "main": [
+        [
+          {
+            "node": "Fetch Previous Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Previous Run": {
+      "main": [
+        [
+          {
+            "node": "Fetch Previous Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Previous Metrics": {
+      "main": [
+        [
+          {
+            "node": "Metric Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Metric Engine": {
+      "main": [
+        [
+          {
+            "node": "Prepare Claude Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Claude Input": {
+      "main": [
+        [
+          {
+            "node": "Claude Insight",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Insight": {
+      "main": [
+        [
+          {
+            "node": "Grounding Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Grounding Check": {
+      "main": [
+        [
+          {
+            "node": "Write Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Metrics": {
+      "main": [
+        [
+          {
+            "node": "Write Insights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Insights": {
+      "main": [
+        [
+          {
+            "node": "Complete Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Claude Insight",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insight Schema": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Claude Insight",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "dc8a49d9-0148-4019-90e4-6445a378c0d5",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "4c7399d63283ab23b038107b3d9551ef4ce9469e21819dd4d80f7395ea107ece"
+  },
+  "nodeGroups": [],
+  "id": "Q9X18KQaSrqvYHqI",
+  "tags": []
+}
